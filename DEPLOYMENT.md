@@ -50,7 +50,7 @@ docker compose logs -f kama
 - TLS PostgreSQL по умолчанию проверяет сертификат. Старый режим auto теперь означает strict без скрытого перехода к plaintext.
 - Сессии PostgreSQL и ClickHouse хранятся в sessionStorage текущей вкладки, TTL — 4 часа бездействия. Старые записи с паролями из localStorage удаляются при загрузке. Настройки интерфейса и профили без паролей остаются в localStorage.
 - sessionStorage не является шифрованным хранилищем: код этого origin имеет к нему доступ; браузер может восстанавливать вкладки. На общих компьютерах используйте «Забыть сессию» и закройте вкладку.
-- Backend раздаёт только index.html и assets/. Документы, тесты, .env, server.js и зависимости через HTTP недоступны.
+- Backend раздаёт только assets/ и редирект с `/` на каноническую страницу. Документы, тесты, .env, server.js и зависимости через HTTP недоступны.
 - Списки разрешённых origins и адресов БД не заменяют аутентификацию и сетевые политики. Ограничьте исходящие соединения backend к разрешённым БД.
 - Google Fonts удалён: шрифт Manrope подключается локальными файлами `assets/fonts/*.woff2` через `@font-face`, локальный SheetJS не требует CDN.
 
@@ -69,7 +69,8 @@ docker compose logs -f kama
 Pages публикует корень ветки `main` в подпапку `/<repo>/` и не запускает `server.js`, редиректа с `/` там нет:
 
 - новый интерфейс — `https://vasgrishin-a11y.github.io/kama/assets/kama.html` (ссылки внутри `kama.html` относительные, поэтому они разрешаются внутри подпапки);
-- `https://vasgrishin-a11y.github.io/kama/` — это корневой `index.html` из репозитория, исторический интерфейс коннекторов;
+- `https://vasgrishin-a11y.github.io/kama/` — корневой `index.html`, редирект (`meta refresh` + `location.replace`) на `./assets/kama.html`;
+- исторический интерфейс коннекторов — `https://vasgrishin-a11y.github.io/kama/legacy.html`;
 - сборка Pages запускается push-событием в `main`. Если после merge сайт не обновился, сравните SHA последней сборки (`GET /repos/<owner>/<repo>/pages/builds/latest`) с `main` и запросите пересборку в Settings → Pages → «Request a build».
 
 ## CI

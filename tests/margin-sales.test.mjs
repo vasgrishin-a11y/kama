@@ -29,7 +29,7 @@ import jsdomPkg from 'jsdom';
 const { JSDOM, VirtualConsole, requestInterceptor } = jsdomPkg;
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const HTML = process.env.INPLAN_HTML ? path.resolve(process.env.INPLAN_HTML) : path.join(ROOT, 'index.html');
+const HTML = process.env.INPLAN_HTML ? path.resolve(process.env.INPLAN_HTML) : path.join(ROOT, 'legacy.html');
 const BASE = 'http://localhost:8080';
 const MIME = { '.js': 'application/javascript', '.css': 'text/css', '.html': 'text/html' };
 

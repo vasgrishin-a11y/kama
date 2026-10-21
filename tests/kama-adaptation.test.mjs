@@ -44,6 +44,18 @@ test('KAMA: ссылки в kama.html относительные и лежат �
   for(const ref of refs) assert.ok(existsSync(new URL(`../assets/${ref}`,import.meta.url)),`рядом с kama.html нет файла для ссылки ${ref}`);
 });
 
+test('KAMA: корневой index.html ведёт на новый дашборд, исторический интерфейс сохранён в legacy.html',async()=>{
+  const root=readFileSync(new URL('../index.html',import.meta.url),'utf8');
+  // На Pages корень сайта — это index.html, поэтому редирект должен быть относительным.
+  assert.match(root,/<meta http-equiv="refresh" content="0; url=\.\/assets\/kama\.html">/);
+  assert.match(root,/location\.replace\(new URL\('assets\/kama\.html', location\.href\)\.href\)/);
+  assert.equal(/(?:href|src|url)=["']?\/[^/]/.test(root),false,'в корневом index.html остались корневые пути');
+  for(const target of ['assets/kama.html','legacy.html'])
+    assert.ok(existsSync(new URL(`../${target}`,import.meta.url)),`нет цели редиректа ${target}`);
+  const legacy=readFileSync(new URL('../legacy.html',import.meta.url),'utf8');
+  assert.match(legacy,/КАМА · Планирование спроса и производства/,'в legacy.html должен остаться исторический интерфейс коннекторов');
+});
+
 test('KAMA: same-origin API works, foreign origin and preflight are rejected',async()=>{
   await withServer(async base=>{
     assert.equal((await fetch(base+'/api/health',{headers:{Origin:base}})).status,200);
