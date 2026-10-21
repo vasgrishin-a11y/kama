@@ -9,7 +9,7 @@
    «public_2» (снимается префикс data_, регистр не важен; список схем, где
    есть independent_demand, приходит от backend и служит справочником имён).
 
-   Зависимости: только fetch/localStorage. CHX (assets/inplan-ch.js) вызывает
+   Зависимости: только fetch/sessionStorage. CHX (assets/inplan-ch.js) вызывает
    PGX.enabled() и PGX.uncFor() внутри loadVersionAgg.
    ВНИМАНИЕ: namespace PGX — не путать с CHX (ClickHouse) и CH (палитра).
    ═════════════════════════════════════════════════════════════════════════ */
@@ -17,6 +17,8 @@
 'use strict';
 
 const LS_SESSION = 'inplan_pg_session_v1';
+// Remove credentials saved by older versions; do not migrate them.
+try{ localStorage.removeItem(LS_SESSION) }catch(e){}
 const SESSION_TTL_MS = 4 * 60 * 60 * 1000; // 4 часа с последней активности
 
 /* ─────────────── 1. КОНФИГУРАЦИЯ ─────────────── */
@@ -26,10 +28,10 @@ const PGX = window.PGX = {
        При открытии дашборда со статического хостинга/file:// здесь должен
        быть URL запущенного server.js (например http://host:8080). */
     backend:'',
-    host:'db-postgresql-app.k8s.b1gahmn2gdjf3lsm4jeh.in-plan.ru',
-    port:48235,
+    host:'localhost',
+    port:5432,
     database:'pgs_app_data_db',
-    user:'', password:'', ssl:'auto',
+    user:'', password:'', ssl:'strict',
     /* Ручное соответствие «база ClickHouse → схема PostgreSQL»:
        {'data_public_4899':'public_1494'}. Нужно, когда нумерация прогонов в
        ClickHouse и схем в Postgres не совпадает (а она совпадает не всегда:
@@ -58,19 +60,21 @@ const PGX = window.PGX = {
   }
 };
 
+Object.assign(PGX.cfg, (window.KAMA_CONFIG||{}).pg||{});
+
 /* ─────────────── 2. АВТОСЕССИЯ НА 4 ЧАСА ───────────────
    Тот же осознанный компромисс, что и автосессия ClickHouse: логин и пароль
-   хранятся в localStorage этого origin, сессия истекает через 4 часа
+   хранятся в sessionStorage текущей вкладки, сессия истекает через 4 часа
    бездействия, кнопка «Забыть PG-сессию» стирает её досрочно. */
 PGX.session = {
   disabled:false,
   read(){
     try{
-      const raw = localStorage.getItem(LS_SESSION);
+      const raw = sessionStorage.getItem(LS_SESSION);
       if(!raw) return null;
       const rec = JSON.parse(raw);
       if(!rec || rec.v!==1 || !rec.cfg || !rec.expiresAt || rec.expiresAt<=Date.now()){
-        localStorage.removeItem(LS_SESSION);
+        sessionStorage.removeItem(LS_SESSION);
         return null;
       }
       return rec;
@@ -83,12 +87,12 @@ PGX.session = {
       cfg:{ backend:c.backend, host:c.host, port:c.port, database:c.database,
             user:c.user, password:c.password, ssl:c.ssl,
             schemaMap:Object.assign({}, c.schemaMap||{}) } };
-    try{ localStorage.setItem(LS_SESSION, JSON.stringify(rec)); return true }
+    try{ sessionStorage.setItem(LS_SESSION, JSON.stringify(rec)); return true }
     catch(e){ console.warn('PG-автосессия не сохранена:', e); return false }
   },
   touch(){ return this.save() },
   enable(){ this.disabled=false },
-  clear(){ this.disabled=true; try{ localStorage.removeItem(LS_SESSION) }catch(e){} },
+  clear(){ this.disabled=true; try{ sessionStorage.removeItem(LS_SESSION) }catch(e){} },
   exists(){ return !!this.read() }
 };
 PGX.forgetSession = ()=>{
@@ -229,8 +233,8 @@ PGX.api = async function(pathName, body){
 };
 PGX.connBody = function(){
   const c = PGX.cfg;
-  return { host:c.host, port:Number(c.port)||48235, database:c.database,
-           user:c.user, password:c.password, ssl:c.ssl||'auto' };
+  return { host:c.host, port:Number(c.port)||5432, database:c.database,
+           user:c.user, password:c.password, ssl:c.ssl||'strict' };
 };
 
 /* Подписи версий — необязательный справочник. Ключ кеша не содержит сами

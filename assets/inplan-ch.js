@@ -11,12 +11,14 @@
 const LS_PROFILES = 'inplan_ch_profiles_v1';
 const LS_SCENARIO = 'inplan_ch_scenario_v1';
 const LS_SESSION = 'inplan_ch_session_v1';
+// Remove credentials saved by older versions; do not migrate them.
+try{ localStorage.removeItem(LS_SESSION) }catch(e){}
 const SESSION_TTL_MS = 4 * 60 * 60 * 1000; // 4 часа с последней активности
 
 /* ─────────────── 1. КОНФИГУРАЦИЯ ─────────────── */
 const CHX = window.CHX = {
   cfg:{
-    host:'clickhouse.k8s.b1gahmn2gdjf3lsm4jeh.in-plan.ru',
+    host:'',
     port:443, proto:'https', user:'readonly', pass:'',
     useProxy:false, proxyUrl:'/api/ch',
     schemas:[], base:'', gran:4,
@@ -30,20 +32,22 @@ const CHX = window.CHX = {
   versions:[]                    // [{id,label,src,isBase,agg,dims}]
 };
 
+Object.assign(CHX.cfg, (window.KAMA_CONFIG||{}).ch||{});
+
 /* ─────────────── 1.1. АВТОСЕССИЯ НА 4 ЧАСА ───────────────
-   Вариант 2: для автоматического переподключения после закрытия браузера
+   Вариант 2: для автоматического переподключения после перезагрузки текущей вкладки
    сохраняем также пароль. Это осознанный компромисс удобства и безопасности:
-   значение находится в localStorage и доступно JavaScript этого origin.
+   значение находится в sessionStorage и доступно JavaScript этого origin.
    Сессия удаляется автоматически после 4 часов бездействия. */
 CHX.session = {
   disabled:false,
   read(){
     try{
-      const raw = localStorage.getItem(LS_SESSION);
+      const raw = sessionStorage.getItem(LS_SESSION);
       if(!raw) return null;
       const rec = JSON.parse(raw);
       if(!rec || rec.v !== 1 || !rec.cfg || !rec.expiresAt || rec.expiresAt <= Date.now()){
-        localStorage.removeItem(LS_SESSION);
+        sessionStorage.removeItem(LS_SESSION);
         return null;
       }
       return rec;
@@ -63,7 +67,7 @@ CHX.session = {
         base:c.base, gran:c.gran, detailOrders:c.detailOrders
       }
     };
-    try{ localStorage.setItem(LS_SESSION, JSON.stringify(rec)); return true }
+    try{ sessionStorage.setItem(LS_SESSION, JSON.stringify(rec)); return true }
     catch(e){ console.warn('Автосессия не сохранена:',e); return false }
   },
   touch(){
@@ -72,7 +76,7 @@ CHX.session = {
     return ok;
   },
   enable(){ this.disabled=false },
-  clear(){ this.disabled=true; try{ localStorage.removeItem(LS_SESSION) }catch(e){} },
+  clear(){ this.disabled=true; try{ sessionStorage.removeItem(LS_SESSION) }catch(e){} },
   exists(){ return !!this.read() },
   ttl(){
     const rec=this.read();
@@ -1681,8 +1685,8 @@ function drawModal(){
     <span class="chm-x" id="chmX">✕</span></div>
   <div class="chm-note">Версия данных — это проект (база вида <code>data_public*</code>).
     После подключения выберите схемы: одна основная (полная детализация) и до нескольких для сравнения.
-    <b>Автосессия на 4 часа включена:</b> параметры и пароль сохраняются в браузере для автоматического
-    восстановления после закрытия браузера. Кнопка «Забыть автосессию» удаляет сохранённые данные.</div>
+    <b>Автосессия на 4 часа включена:</b> параметры и пароль сохраняются в текущей вкладке для автоматического
+    восстановления после перезагрузки текущей вкладки. Кнопка «Забыть автосессию» удаляет сохранённые данные.</div>
 
   ${profs.length?`<div class="chm-row"><label>Профиль</label>
     <select id="chmProf"><option value="">— не выбран —</option>
@@ -1737,7 +1741,7 @@ function drawModal(){
       запросы <code>/api/pg/*</code> упираются в чужой 404</span></div>
   <div class="chm-row"><label>Хост / Порт</label>
     <input id="pgmHost" type="text" value="${esc(PGX.cfg.host)}" style="flex:1">
-    <input id="pgmPort" type="number" value="${num(PGX.cfg.port)||48235}" style="width:110px;margin-left:8px"></div>
+    <input id="pgmPort" type="number" value="${num(PGX.cfg.port)||5432}" style="width:110px;margin-left:8px"></div>
   <div class="chm-row"><label>База</label>
     <input id="pgmDb" type="text" value="${esc(PGX.cfg.database)}" placeholder="pgs_app_data_db">
     <span class="chm-hint">продуктивная база: <code>pgs_app_data_db</code> — в ней лежат схемы
@@ -1749,7 +1753,7 @@ function drawModal(){
     <input id="pgmPass" type="password" value="${esc(PGX.cfg.password)}" autocomplete="new-password"></div>
   <div class="chm-act">
     <select id="pgmSsl">${['auto','off','insecure','strict'].map(v=>
-      `<option value="${v}" ${PGX.cfg.ssl===v?'selected':''}>SSL: ${{auto:'авто',off:'выкл',insecure:'без проверки сертификата',strict:'строгий'}[v]}</option>`).join('')}</select>
+      `<option value="${v}" ${PGX.cfg.ssl===v?'selected':''}>SSL: ${{auto:'строгий (совместимость)',off:'выкл',insecure:'без проверки сертификата',strict:'строгий'}[v]}</option>`).join('')}</select>
     <button class="btn" id="pgmTest">Проверить PG</button>
     ${PGX.session.exists()?`<button class="btn d" id="pgmForget">Забыть PG-сессию</button>`:''}
     <span id="pgmStat" class="chm-stat">${pgStatText()}</span>
@@ -2501,7 +2505,7 @@ CHX.tabVS = function(){
 };
 
 
-/* Восстанавливаем подключение после закрытия браузера и контролируем его
+/* Восстанавливаем подключение после перезагрузки текущей вкладки и контролируем его
    при возвращении на вкладку или после восстановления сети. */
 function installSessionLifecycle(){
   CHX.restoreSession();

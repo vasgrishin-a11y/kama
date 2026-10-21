@@ -3,13 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>S&OP Planning Result · In.Plan</title>
+<title>КАМА · Планирование спроса и производства</title>
 <script>/* Ранняя установка темы — без мигания светлой темой при загрузке (FOUC) */
 try{document.documentElement.setAttribute('data-theme',localStorage.getItem('inplan_theme')||'light')}catch(e){}</script>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
 <!-- SheetJS вендорен локально: дашборд работает без доступа к CDN (заводские сети, офлайн) -->
+<script src="assets/runtime-config.js"></script>
 <script src="assets/xlsx.full.min.js"></script>
 <!-- Общие утилиты (esc, sany, xstr, num, pnum, plural, nf, тема) — общие с chain.html -->
 <script src="assets/inplan-common.js"></script>
@@ -619,14 +617,14 @@ details.src-fold .dq{margin:0}
   <!-- ═══════════ ТЁМНЫЙ РЕЛЬС ═══════════ -->
   <aside class="rail">
     <div class="rail-logo">
-      <div class="inplan-badge" title="In.Plan Design Accent">
+      <div class="inplan-badge" title="КАМА — на базе In.Plan">
         <span class="ip-sq ip-s1"></span>
         <span class="ip-sq ip-s2"></span>
         <span class="ip-sq ip-s3"></span>
         <span class="ip-sq ip-s4"></span>
       </div>
     </div>
-    <div class="rail-sub">Supply Network Planning</div>
+    <div class="rail-sub">КАМА · Планирование</div>
     <div class="rail-grp">Результат оптимизации</div>
     <nav class="rail-nav" id="nav"></nav>
     <div class="rail-foot"><button id="railToggle" title="Свернуть / развернуть панель">‹ Свернуть панель</button></div>
@@ -8087,7 +8085,7 @@ window.addEventListener('keydown',e=>{
 });
 
 /* Хук ClickHouse: при загрузке данных из CH сохраняем свежий снимок,
-   чтобы после закрытия браузера восстановились и данные, и соединение. */
+   чтобы после перезагрузки вкладки восстановились и данные, и соединение. */
 window.onCHDataset=function(ds,versions){
   Object.keys(TBL).forEach(k=>delete TBL[k]);
   Object.keys(POPQ).forEach(k=>delete POPQ[k]);
