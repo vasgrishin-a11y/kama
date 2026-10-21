@@ -773,8 +773,12 @@ function createApp(deps) {
 
   /* Статика дашборда: один origin для страницы и API. */
   app.use('/assets', express.static(path.join(__dirname, 'assets'), { dotfiles:'deny' }));
-  app.get('/index.html', (req, res) => res.sendFile(path.join(__dirname, 'assets', 'kama.html')));
-  app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'assets', 'kama.html')));
+  /* Канонический адрес страницы — /assets/kama.html. Ссылки внутри kama.html
+     относительные (kama.css, kama-model.js …), поэтому страница одинаково
+     работает и за этим сервером, и на GitHub Pages, где сайт живёт в подпапке
+     /<repo>/ и корневые пути /assets/… ушли бы за пределы проекта. */
+  app.get('/index.html', (req, res) => res.redirect(302, '/assets/kama.html'));
+  app.get('/', (req, res) => res.redirect(302, '/assets/kama.html'));
 
   /* 404 подписан сервисом: по подписи дашборд понимает, что ответил именно
      backend (значит, адрес верный, но версия старая), а не статика/ingress. */

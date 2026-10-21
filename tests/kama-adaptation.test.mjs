@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { JSDOM } from 'jsdom';
 import pg from 'pg';
@@ -17,7 +17,13 @@ const post=(url,body,headers={})=>fetch(url,{method:'POST',headers:{'Content-Typ
 
 test('KAMA: public assets work; source, docs, dependencies and secrets are not served',async()=>{
   await withServer(async base=>{
-    for(const path of ['/','/index.html','/assets/runtime-config.js','/assets/inplan-pg.js','/assets/xlsx.full.min.js'])
+    for(const path of ['/','/index.html']){
+      const r=await fetch(base+path,{redirect:'manual'});
+      assert.equal(r.status,302,path);
+      assert.equal(r.headers.get('location'),'/assets/kama.html',path);
+      assert.equal((await fetch(base+path)).status,200,path);
+    }
+    for(const path of ['/assets/kama.html','/assets/runtime-config.js','/assets/inplan-pg.js','/assets/xlsx.full.min.js'])
       assert.equal((await fetch(base+path)).status,200,path);
     for(const path of ['/server.js','/package.json','/README.md','/tests/server.test.mjs','/.env','/node_modules/express/package.json','/assets/../server.js'])
       assert.equal((await fetch(base+path)).status,404,path);
@@ -27,6 +33,15 @@ test('KAMA: public assets work; source, docs, dependencies and secrets are not s
     assert.equal(w.KAMA_CONFIG.pg.ssl,'strict');
     assert.equal('password' in w.KAMA_CONFIG.pg,false);
   });
+});
+
+test('KAMA: ссылки в kama.html относительные и лежат рядом с файлом (GitHub Pages /<repo>/)',async()=>{
+  const html=readFileSync(new URL('../assets/kama.html',import.meta.url),'utf8');
+  // Корневой путь /assets/… на Pages разрешился бы в https://<user>.github.io/assets/… — 404.
+  assert.equal(/(?:href|src)="\/[^/"]/.test(html),false,'в kama.html остались корневые ссылки вида /assets/…');
+  const refs=[...html.matchAll(/(?:href|src)="([^"]+)"/g)].map(m=>m[1]).filter(r=>!r.startsWith('#')&&!r.startsWith('//')&&!/^[a-z]+:/i.test(r));
+  assert.ok(refs.length>=5,`ожидали не менее 5 относительных ссылок, получили ${refs.length}`);
+  for(const ref of refs) assert.ok(existsSync(new URL(`../assets/${ref}`,import.meta.url)),`рядом с kama.html нет файла для ссылки ${ref}`);
 });
 
 test('KAMA: same-origin API works, foreign origin and preflight are rejected',async()=>{
