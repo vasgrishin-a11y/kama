@@ -25,7 +25,7 @@ async function withServer(handler, fn) {
     },
     async close() {}
   });
-  const app = createApp({ connect });
+  const app = createApp({ connect, allowedTargets:['pg.test:5432'] });
   const server = app.listen(0, '127.0.0.1');
   await new Promise((r) => server.once('listening', r));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -121,7 +121,7 @@ test('POST /api/pg/scenarios читает sys_id/name из pgs_app_metadata_db.s
       async close() {}
     };
   };
-  const app = createApp({ connect });
+  const app = createApp({ connect, allowedTargets:['pg.test:5432'] });
   const server = app.listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -377,7 +377,7 @@ test('POST /api/pg/unc — валидация входа: плохая гран�
 
 test('дружелюбные ошибки: 28P01 → 401 «неверный логин или пароль»', async () => {
   const connect = async () => { const e = new Error('password authentication failed'); e.code = '28P01'; throw e; };
-  const app = createApp({ connect });
+  const app = createApp({ connect, allowedTargets:['pg.test:5432'] });
   const server = app.listen(0, '127.0.0.1');
   await new Promise((r) => server.once('listening', r));
   const base = `http://127.0.0.1:${server.address().port}`;

@@ -21,7 +21,7 @@
  * Логин/пароль приходят в теле каждого запроса и нигде не сохраняются и не
  * логируются. Сервис также раздаёт статику дашборда (index.html, assets/),
  * поэтому страница и API работают на одном origin — CORS-проблем нет; для
- * открытых со статического хостинга страниц CORS разрешён («*», без cookies).
+ * отдельного frontend origin требуется CORS_ORIGINS.
  *
  * Соответствие версий: база ClickHouse «data_public_2» ↔ схема Postgres
  * «public_2» (префикс data_ отрезается на фронтенде, регистр не важен).
@@ -35,15 +35,15 @@ const express = require('express');
 const { Client } = require('pg');
 
 const PG_DEFAULTS = {
-  host: 'db-postgresql-app.k8s.b1gahmn2gdjf3lsm4jeh.in-plan.ru',
-  port: 48235,
-  database: 'pgs_app_data_db'       // точное имя продуктивной базы (владелец, 2026-10)
+  host: process.env.PGHOST || 'localhost',
+  port: Number(process.env.PGPORT || 5432),
+  database: process.env.PGDATABASE || 'pgs_app_data_db'       // можно переопределить для контура КАМА
 };
 /* Фактическое имя таблицы в PostgreSQL — independent_demand. Старое слитное
    написание оставлено только как обратная совместимость для прежних выгрузок. */
 const TABLE_NAME = 'independent_demand';
 const TABLE_CANDIDATES = ['independent_demand', 'independentdemand'];
-const SCENARIO_DATABASE = 'pgs_app_metadata_db';
+const SCENARIO_DATABASE = process.env.PG_METADATA_DATABASE || 'pgs_app_metadata_db';
 const SCENARIO_TABLE = 'scenario';
 const MAX_SCHEMAS = 512;
 /* Подпись сервиса в каждом ответе (в т.ч. в ошибках). По ней фронтенд
@@ -88,7 +88,7 @@ function normalizeConn(body) {
   const database = reqStr(b.database, 'База данных');
   const user = reqStr(b.user, 'Логин');
   const password = b.password === undefined || b.password === null ? '' : String(b.password);
-  const ssl = b.ssl === undefined || b.ssl === null || b.ssl === '' ? 'auto' : String(b.ssl);
+  const ssl = b.ssl === undefined || b.ssl === null || b.ssl === '' ? 'strict' : String(b.ssl);
   if (!['auto', 'off', 'insecure', 'strict'].includes(ssl))
     throw new HttpError(400, 'Некорректный режим SSL.');
   return { host, port, database, user, password, ssl };
@@ -205,22 +205,15 @@ async function defaultConnect(conn) {
     password: conn.password,
     connectionTimeoutMillis: 15000,
     statement_timeout: 180000,
-    application_name: 'inplan-dashboard'
+    application_name: 'kama'
   };
   const open = async mode => {
     const client = new Client({ ...base, ssl: sslConfig(mode) });
     await client.connect();
     return client;
   };
-  let client;
-  if (conn.ssl && conn.ssl !== 'auto') client = await open(conn.ssl);
-  else {
-    try { client = await open('insecure'); }
-    catch (e) {
-      if (isSslError(e)) client = await open('off');
-      else throw e;
-    }
-  }
+  // Legacy auto now means verified TLS; never silently downgrade.
+  const client = await open(!conn.ssl || conn.ssl === 'auto' ? 'strict' : conn.ssl);
   return {
     query: (text, params) => client.query(text, params),
     close: () => client.end().catch(() => {})
@@ -460,19 +453,41 @@ function sumPgRows(rows) {
 
 /* ── Приложение ── */
 function createApp(deps) {
-  const connect = (deps && deps.connect) || defaultConnect;
+  const rawConnect = (deps && deps.connect) || defaultConnect;
+  const allowedTargets = (deps && deps.allowedTargets) ||
+    (process.env.PG_ALLOWED_TARGETS || `${PG_DEFAULTS.host}:${PG_DEFAULTS.port}`)
+      .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  const allowedOrigins = (process.env.CORS_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
+  const connect = async conn => {
+    if (!allowedTargets.includes(`${conn.host}:${conn.port}`.toLowerCase()))
+      throw new HttpError(403, 'Адрес PostgreSQL не разрешён сервером (PG_ALLOWED_TARGETS).');
+    if (['off', 'insecure'].includes(conn.ssl) && process.env.ALLOW_INSECURE_PG !== 'true')
+      throw new HttpError(403, 'Незащищённый режим PostgreSQL отключён сервером. Используйте strict.');
+    return rawConnect(conn);
+  };
   const app = express();
-  /* CORS: дашборд может быть открыт со статического хостинга/file://, тогда
-     запросы идут на этот backend с чужого origin. Куки не используются
-     (пароль — в теле), «*» без credentials безопасно. */
+  app.disable('x-powered-by');
   app.use((req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    res.setHeader('Access-Control-Max-Age', '86400');
-    res.setHeader('Vary', 'Origin');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'same-origin');
+    const origin = req.get('Origin');
+    const ownOrigin = `${req.protocol}://${req.get('Host')}`;
+    if (origin && origin !== ownOrigin && !allowedOrigins.includes(origin))
+      return res.status(403).json({ ok:false, error:'Origin не разрешён (CORS_ORIGINS).', service:SERVICE });
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.vary('Origin');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    }
     if (req.method === 'OPTIONS') return res.status(204).end();
     next();
+  });
+  app.get('/assets/runtime-config.js', (req, res) => {
+    const config = { pg: { ...PG_DEFAULTS, ssl:'strict' },
+      ch: { host:process.env.CH_HOST || '', port:Number(process.env.CH_PORT || 443), proto:process.env.CH_PROTO || 'https' } };
+    res.setHeader('Cache-Control', 'no-store');
+    res.type('application/javascript').send('window.KAMA_CONFIG = ' + JSON.stringify(config) + ';');
   });
   app.use(express.json({ limit: '256kb' }));
 
@@ -757,7 +772,8 @@ function createApp(deps) {
   });
 
   /* Статика дашборда: один origin для страницы и API. */
-  app.use(express.static(__dirname));
+  app.use('/assets', express.static(path.join(__dirname, 'assets'), { dotfiles:'deny' }));
+  app.get('/index.html', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
   app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
   /* 404 подписан сервисом: по подписи дашборд понимает, что ответил именно
@@ -782,7 +798,7 @@ if (require.main === module) {
   const PORT = Number(process.env.PORT) || 8080;
   const HOST = process.env.HOST || '0.0.0.0';
   createApp().listen(PORT, HOST, () => {
-    console.log(`In.Plan dashboard + PG-прокси → http://${HOST}:${PORT}`);
+    console.log(`КАМА dashboard + PG-прокси → http://${HOST}:${PORT}`);
     console.log(`Открывайте дашборд ИМЕННО по этому адресу (http://localhost:${PORT}): страница,`);
     console.log('открытая со статического хостинга, не найдёт /api/pg/* и покажет предупреждение.');
     console.log(`Postgres по умолчанию: ${PG_DEFAULTS.host}:${PG_DEFAULTS.port} / ${PG_DEFAULTS.database} (таблица ${TABLE_NAME})`);

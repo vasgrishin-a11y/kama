@@ -259,7 +259,7 @@ test('схема выбирается вручную, когда номера CH
   assert.equal(sent.schema, 'public_1494');
 
   /* выбор сохранён в автосессии и переживает перезагрузку страницы */
-  assert.match(w.localStorage.getItem('inplan_pg_session_v1'), /public_1494/);
+  assert.match(w.sessionStorage.getItem('inplan_pg_session_v1'), /public_1494/);
   w.PGX.cfg.schemaMap = {};
   assert.equal(w.PGX.restoreSession(), true);
   assert.equal(w.PGX.cfg.schemaMap['data_public_4899'], 'public_1494', 'восстановлено из автосессии');

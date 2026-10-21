@@ -1,3 +1,5 @@
+> Исторический аудит исходного In.Plan, а не актуальный аудит КАМА. Текущие изменения и ограничения: [FIT_GAP_ANALYSIS.md](FIT_GAP_ANALYSIS.md), [DEPLOYMENT.md](DEPLOYMENT.md).
+
 # Аудит кода и бизнес-показателей In.Plan Dashboard
 
 Дата последнего обновления: 2026-10-08. База среза: ветка `arena/4047ec99-inplan-dashboard`, исходный commit `c54ef31`.
