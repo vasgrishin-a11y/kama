@@ -37,7 +37,7 @@ async function waitFor(fn, timeout = 5000, label = 'условие') {
 async function boot(t) {
   const virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', () => {});
-  const dom = new JSDOM(fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8'), {
+  const dom = new JSDOM(fs.readFileSync(path.join(ROOT, 'legacy.html'), 'utf8'), {
     url: BASE + '/', runScripts: 'dangerously', pretendToBeVisual: true,
     virtualConsole, resources: { interceptors: [localResources] },
   });

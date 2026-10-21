@@ -388,8 +388,11 @@ test('дружелюбные ошибки: 28P01 → 401 «неверный ло
   } finally { await new Promise((r) => server.close(r)); }
 });
 
-test('статика: / отдаёт index.html дашборда', async () => {
+test('статика: / редиректит на канонический /assets/kama.html и отдаёт дашборд', async () => {
   await withServer(() => ({ rows: [] }), async (base) => {
+    const redirect = await fetch(base + '/', { redirect: 'manual' });
+    assert.equal(redirect.status, 302);
+    assert.equal(redirect.headers.get('location'), '/assets/kama.html');
     const r = await fetch(base + '/');
     assert.equal(r.status, 200);
     assert.match(r.headers.get('content-type') || '', /text\/html/);

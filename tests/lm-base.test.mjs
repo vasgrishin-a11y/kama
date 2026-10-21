@@ -41,7 +41,7 @@ const { JSDOM, VirtualConsole, requestInterceptor } = jsdomPkg;
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HTML = process.env.INPLAN_HTML
   ? path.resolve(process.env.INPLAN_HTML)
-  : path.join(ROOT, 'index.html');
+  : path.join(ROOT, 'legacy.html');
 const BASE = 'http://localhost:8080';
 const LM_MODE_KEY = 'inplan_lm_mode';
 const LM_BASE_KEY = 'inplan_lm_base';

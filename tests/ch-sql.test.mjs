@@ -37,7 +37,7 @@ import jsdomPkg from 'jsdom';
 const { JSDOM, VirtualConsole, requestInterceptor } = jsdomPkg;
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const HTML = process.env.INPLAN_HTML ? path.resolve(process.env.INPLAN_HTML) : path.join(ROOT, 'index.html');
+const HTML = process.env.INPLAN_HTML ? path.resolve(process.env.INPLAN_HTML) : path.join(ROOT, 'legacy.html');
 const BASE = 'http://localhost:8080';
 const MIME = { '.js': 'application/javascript', '.css': 'text/css', '.html': 'text/html' };
 
@@ -248,7 +248,7 @@ test('исходники: конверсии *OrZero/*OrNull не применя
   /* ловим и прямой бэктик, и шаблон ${q('...')} — столбец в любом случае
      не String, а OrZero/OrNull принимают только String */
   const badCall = /to\w+Or(?:Zero|Null)\s*\(\s*(?:`|\$\{q\()/;
-  for (const f of ['assets/inplan-ch.js', 'index.html']) {
+  for (const f of ['assets/inplan-ch.js', 'legacy.html']) {
     const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
     assert.ok(!badCall.test(src),
       `${f}: функции с постфиксом OrZero/OrNull принимают только String — применять их к столбцу (Decimal/число) нельзя`);
