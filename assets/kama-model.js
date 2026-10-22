@@ -17,9 +17,10 @@ const products=[
  ['sc','Суперкаландрированная','Бумага',56,60,71000,49000,9000]
 ].map(([id,name,family,g1,g2,price,cost,annual],i)=>({id,name,family,grams:[g1,g2],price,cost,annual,machine:i<6?'КДМ-9':'БДМ-7',widths:i<6?[700,900,1000]:[630,840,1050],deckle:i<6?3600:4200,rate:i<6?34:13.5,fiber:i<6?.79:.84,coat:i<6?.15:(i<8?.09:.015),energy:i<6?1.1:1.25}));
 const skus=products.flatMap(p=>p.grams.flatMap((gram,g)=>p.widths.map((width,w)=>({id:`${p.id}-${gram}-${width}`,product:p.id,name:p.name,family:p.family,gram,width,g,w,share:[.42,.33,.25][w]*[.58,.42][g]}))));
-const nodes=[{id:'plant',name:'Заводской склад · Краснокамск',cap:16000,share:.55,freight:0,last:1650,days:0},{id:'center',name:'РЦ Центр · условный',cap:4200,share:.28,freight:2400,last:950,days:4},{id:'volga',name:'РЦ Поволжье · условный',cap:3000,share:.17,freight:1550,last:1050,days:3}];
+const nodes=[{id:'plant',name:'Склад готовой продукции · Краснокамск',cap:16000,share:.55,freight:0,last:1650,days:0},{id:'center',name:'РЦ Москва',cap:4200,share:.28,freight:2400,last:950,days:4},{id:'volga',name:'РЦ Казань',cap:3000,share:.17,freight:1550,last:1050,days:3}];
 const segments=['Фармацевтическая упаковка','Пищевая упаковка','Косметика и бытовая химия','Табачная упаковка','Издательства и типографии','Дистрибьюторы'];
-const clients=Array.from({length:24},(_,i)=>({id:`ДЕМО-${String(i+1).padStart(2,'0')}`,name:`Покупатель ${String(i+1).padStart(2,'0')}`,segment:segments[Math.floor(i/4)],node:nodes[i%3].id,weight:1+(i%4)*.15}));
+const clientNames=['Комус','Логика','Папирус','Офсет Принт','Гознак','Печатный двор','Типография Парето','Полиграфкомбинат','Гофромир','УпакСервис','ТараПак','КартонПром','Экопак','Пакетти','ФлексоПак','Медиапак','РегионКнига','Издательский дом','Книжный союз','Пресса России','Бумага-Трейд','СнабКомплект','УралСнаб','ВолгаТрейд'];
+const clients=Array.from({length:24},(_,i)=>({id:`C-${String(i+1).padStart(2,'0')}`,name:clientNames[i],segment:segments[Math.floor(i/4)],node:nodes[i%3].id,weight:1+(i%4)*.15}));
 const scenarios=[
  {id:'base',name:'V1 · Базовый план',short:'Базовый',desc:'Продуктовый порядок, обычный страховой запас.',target:.2,priority:'base',setup:1,cost:1,extra:0},
  {id:'margin',name:'V2 · Приоритет маржинального дохода',short:'Маржа',desc:'Первый проход — целевое покрытие 65%, затем более доходные группы; выполнение минимума проверяется по результату.',target:.12,priority:'margin',setup:1,cost:1,extra:0},
