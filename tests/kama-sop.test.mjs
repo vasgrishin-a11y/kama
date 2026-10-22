@@ -43,7 +43,7 @@ function browser(){const dom=new JSDOM(readFileSync(new URL('../assets/kama.html
 test('S&OP UI: every section and filter renders without DB or browser errors',()=>{
  const dom=browser(),w=dom.window,d=w.document;try{
  assert.match(d.querySelector('h1').textContent,/Обзор/);assert.equal(d.querySelectorAll('#scenario option').length,5);
- for(const tab of ['demand','production','resources','network','finance','compare','data','overview']){d.querySelector(`[data-tab="${tab}"]`).click();assert.ok(d.querySelector('#content').textContent.length>200);assert.ok(!/NaN|undefined|Infinity/.test(d.querySelector('#content').textContent));}
+ for(const tab of ['demand','production','resources','network','finance','compare','capacity','overview']){d.querySelector(`[data-tab="${tab}"]`).click();assert.ok(d.querySelector('#content').textContent.length>200);assert.ok(!/NaN|undefined|Infinity/.test(d.querySelector('#content').textContent));}
  for(const family of ['Бумага','Картон','all']){const el=d.querySelector('#family');el.value=family;el.dispatchEvent(new w.Event('change'));for(const tab of ['production','network','compare']){d.querySelector(`[data-tab="${tab}"]`).click();assert.ok(!/NaN|undefined|Infinity/.test(d.querySelector('#content').textContent));}}
  d.querySelector('#month').value='4';d.querySelector('#month').dispatchEvent(new w.Event('change'));d.querySelector('[data-tab="production"]').click();assert.ok(d.querySelector('#content').textContent.includes('Май'));
  assert.equal(d.querySelectorAll('script[src*="inplan-"]').length,0);
