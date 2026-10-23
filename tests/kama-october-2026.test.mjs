@@ -65,7 +65,8 @@ test("extended logistics reconciles with the same S&OP ledgers", () => {
 test("daily order ATP creates linked production and shipment schedules; selected recalc preserves fixed orders", () => {
   const result = M.forYear(M.runHorizon(balanced), 2026);
   const plan = O.planPortfolio(M, result);
-  assert.equal(plan.results.length, 20);
+  assert.equal(plan.results.length, O.orders.length);
+  assert.equal(plan.results.filter((row) => row.shipped).length, 4);
   assert.ok(plan.summary.fromStock > 0 && plan.summary.withProduction > 0);
   assert.equal(plan.summary.shipmentQty, sum(O.orders, "qty"));
   for (const row of plan.results) {
@@ -75,12 +76,12 @@ test("daily order ATP creates linked production and shipment schedules; selected
     assert.equal(row.lateDays, Math.max(0, O.diffDays(row.deliveryDate, row.requestedDate)));
   }
   for (const quota of plan.quotaUsage) {
-    const expected = sum(plan.results.filter((row) => row.product === quota.product && row.requestedDate.startsWith(quota.month)), "qty");
+    const expected = sum(plan.results.filter((row) => row.product === quota.product && row.requestedDate.startsWith(quota.month)), "quotaQty");
     assert.ok(Math.abs(expected - quota.ordered) < 1e-9);
   }
-  const ids = [O.orders[0].id, O.orders[1].id];
+  const ids = [O.openOrders[0].id, O.openOrders[1].id];
   const partial = O.planPortfolio(M, result, { orderIds: ids, previousResults: plan.results });
-  assert.equal(partial.results.length, 20);
+  assert.equal(partial.results.length, O.orders.length);
   for (const fixed of plan.results.filter((row) => !ids.includes(row.orderId)))
     assert.deepEqual(partial.results.find((row) => row.orderId === fixed.orderId), fixed);
   assert.ok(O.productionSchedule(partial.results).every((row) => row.date && row.machine && row.qty > 0));
@@ -90,7 +91,8 @@ test("October workspace renders and wires every requested dashboard workflow", (
   const dom = browser(), w = dom.window, d = w.document;
   try {
     assert.match(d.querySelector(".overview-kpis").textContent, /БП/);
-    assert.match(d.querySelector("#content").textContent, /прошлого цикла S&OP/);
+    assert.match(d.querySelector(".overview-kpis").textContent, /факт \+ прогноз/);
+    assert.equal(d.querySelector("#content .insight"), null);
     assert.ok(d.querySelector(".revenue-mix-chart"));
     assert.equal(d.querySelector("#scenario-from").options.length, 15);
     assert.equal(d.querySelector("#scenario-from").options[0].value, "9");
@@ -105,12 +107,13 @@ test("October workspace renders and wires every requested dashboard workflow", (
     assert.match(d.querySelector("#content").textContent, /Цель маржи/);
 
     d.querySelector('[data-tab="orders"]').click();
-    assert.equal(d.querySelectorAll("[data-order-select]").length, 20);
+    assert.equal(d.querySelectorAll("[data-order-select]").length, O.openOrders.length);
     assert.ok(d.querySelectorAll(".daily-production-panel tbody tr").length > 0);
-    assert.ok(d.querySelectorAll(".shipment-plan-panel tbody tr").length === 20);
+    assert.equal(d.querySelectorAll(".shipment-plan-panel tbody tr").length, O.orders.length);
     d.querySelector('[data-order-select="ЗК-261001"]').click();
     d.querySelector('[data-order-recalc="selected"]').click();
-    assert.match(d.querySelector(".order-notice").textContent, /Пересчитано заказов: 1/);
+    assert.match(d.querySelector("#toast").textContent, /Пересчитано заказов: 1/);
+    assert.equal(d.querySelector(".order-notice"), null);
 
     d.querySelector('[data-tab="production"]').click();
     assert.equal(d.querySelectorAll(".campaign-stage.embedded").length, 3);
@@ -122,7 +125,7 @@ test("October workspace renders and wires every requested dashboard workflow", (
 
     d.querySelector('[data-tab="resources"]').click();
     assert.equal(d.querySelectorAll(".resource-dynamic").length, 4);
-    assert.equal(d.querySelectorAll(".dual-axis-chart").length, 4);
+    assert.equal(d.querySelectorAll(".resource-dynamic svg.chart").length, 4);
 
     d.querySelector('[data-tab="network"]').click();
     assert.equal(d.querySelectorAll(".stock-mini").length, 4);
