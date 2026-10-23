@@ -108,29 +108,79 @@
     {
       id: "plant",
       name: "Склад готовой продукции · Краснокамск",
+      short: "Завод КАМА",
       cap: 16000,
-      share: 0.55,
+      share: 0.36,
       freight: 0,
       last: 1650,
       days: 0,
+      directDays: 2,
     },
     {
       id: "center",
       name: "РЦ Москва",
+      short: "Москва",
       cap: 4200,
-      share: 0.28,
+      share: 0.17,
       freight: 2400,
       last: 950,
       days: 4,
+      directDays: 5,
     },
     {
       id: "volga",
       name: "РЦ Казань",
+      short: "Казань",
       cap: 3000,
-      share: 0.17,
+      share: 0.11,
       freight: 1550,
       last: 1050,
       days: 3,
+      directDays: 4,
+    },
+    {
+      id: "north",
+      name: "РЦ Санкт-Петербург",
+      short: "Санкт-Петербург",
+      cap: 2800,
+      share: 0.1,
+      freight: 2850,
+      last: 1100,
+      days: 5,
+      directDays: 6,
+    },
+    {
+      id: "south",
+      name: "РЦ Ростов-на-Дону",
+      short: "Ростов-на-Дону",
+      cap: 2600,
+      share: 0.09,
+      freight: 3200,
+      last: 1250,
+      days: 6,
+      directDays: 7,
+    },
+    {
+      id: "ural",
+      name: "РЦ Екатеринбург",
+      short: "Екатеринбург",
+      cap: 2400,
+      share: 0.09,
+      freight: 1900,
+      last: 900,
+      days: 2,
+      directDays: 3,
+    },
+    {
+      id: "siberia",
+      name: "РЦ Новосибирск",
+      short: "Новосибирск",
+      cap: 2200,
+      share: 0.08,
+      freight: 3650,
+      last: 1350,
+      days: 7,
+      directDays: 8,
     },
   ];
   const segments = [
@@ -171,7 +221,7 @@
     id: `C-${String(i + 1).padStart(2, "0")}`,
     name: clientNames[i],
     segment: segments[Math.floor(i / 4)],
-    node: nodes[i % 3].id,
+    node: nodes[i % nodes.length].id,
     weight: 1 + (i % 4) * 0.15,
   }));
   const scenarios = [
@@ -232,6 +282,21 @@
       extra: 0,
     },
   ];
+  const businessPlan = {
+    id: "business-plan",
+    name: "БП · утверждённый бизнес-план",
+    short: "Бизнес-план",
+    desc: "Независимая база сравнения: не изменяется сценарными настройками.",
+    target: 0.27,
+    priority: "balanced",
+    setup: 0.9,
+    cost: 1,
+    extra: 0,
+    demandScale: 1.04,
+    priceScale: 1.02,
+  };
+  const previousSopId = "balanced";
+
   const sum = (a, k) =>
     a.reduce(
       (s, r, i) => s + (typeof k === "function" ? k(r, i) : r[k] || 0),
@@ -270,7 +335,14 @@
     const cfg = { ...config, ...overrides };
     const year = Number(cfg.year) || 2026;
     const initialStock = cfg.initialStock;
+    const initialPrevious = cfg.initialPrevious || {};
+    const startMonth = Math.max(
+      0,
+      Math.min(11, Math.trunc(Number(cfg.startMonth) || 0)),
+    );
     delete cfg.initialStock;
+    delete cfg.initialPrevious;
+    delete cfg.startMonth;
     const bounded = (value, fallback, min, max) => {
       const number = Number(value);
       return Math.max(
@@ -321,18 +393,18 @@
       utilities = [],
       customerRows = [];
     const stock = {};
+    const regionalShare = 1 - nodes[0].share;
     for (const s of skus)
       stock[s.id] = initialStock?.[s.id]
         ? [...initialStock[s.id]]
-        : nodes.map(
-            (n) =>
-              demandFor(s, 0) *
-              0.32 *
-              { plant: 0.65, center: 0.22, volga: 0.13 }[n.id],
+        : nodes.map((n, i) =>
+            demandFor(s, 0) *
+            0.32 *
+            (i === 0 ? 0.52 : (0.48 * n.share) / regionalShare),
           );
     const initial = sum(Object.values(stock), (a) => sum(a, (x) => x));
-    const previous = {};
-    for (let m = 0; m < 12; m++) {
+    const previous = { ...initialPrevious };
+    for (let m = startMonth; m < 12; m++) {
       const start = Object.fromEntries(
         skus.map((s) => [s.id, [...stock[s.id]]]),
       );
@@ -581,12 +653,12 @@
           d = demandFor(s, m),
           st = stock[s.id];
         st[0] += made[s.id];
-        const transfers = [0, 0, 0],
-          sales = [0, 0, 0];
+        const transfers = Array(nodes.length).fill(0),
+          sales = Array(nodes.length).fill(0);
         // Dispatch direct orders first; regional replenishment is same-month (3–4 day transit).
         sales[0] = Math.min(st[0], d * nodes[0].share);
         st[0] -= sales[0];
-        for (let n = 1; n < 3; n++) {
+        for (let n = 1; n < nodes.length; n++) {
           const target = d * nodes[n].share * param("target", 0.2, m);
           const maxNodeRoom = Math.max(
             0,
@@ -612,7 +684,9 @@
           coat: p.cost * 0.2 * coatIndex * intensity.coat,
           energy: p.cost * 0.1 * energyIndex,
           water: p.cost * 0.03 * waterIndex,
-          conversion: p.cost * 0.22,
+          massPrep: p.cost * 0.06,
+          machine: p.cost * 0.11,
+          finishing: p.cost * 0.05,
         };
         const unitCost = sum(Object.values(costParts), (x) => x);
         const logistics = sum(
@@ -628,6 +702,16 @@
           ) * param("holdingCost", 1, m);
         const revenue = shipped * price,
           variable = shipped * unitCost;
+        const conversionCost = shipped * (costParts.massPrep + costParts.machine + costParts.finishing);
+        const fixedParts = {
+          labor: shipped * 4200,
+          maintenance: shipped * 2400,
+          depreciation: shipped * 3600,
+          administration: shipped * 1300,
+          selling: shipped * 900,
+        };
+        const fixedCost = sum(Object.values(fixedParts), (x) => x);
+        const fullCost = variable + logistics + holding + fixedCost;
         rows.push({
           month: m,
           sku: s.id,
@@ -646,7 +730,18 @@
           coatCost: shipped * costParts.coat,
           energyCost: shipped * costParts.energy,
           waterCost: shipped * costParts.water,
-          conversionCost: shipped * costParts.conversion,
+          conversionCost,
+          massPrepCost: shipped * costParts.massPrep,
+          machineCost: shipped * costParts.machine,
+          finishingCost: shipped * costParts.finishing,
+          laborCost: fixedParts.labor,
+          maintenanceCost: fixedParts.maintenance,
+          depreciationCost: fixedParts.depreciation,
+          administrationCost: fixedParts.administration,
+          sellingCost: fixedParts.selling,
+          fixedCost,
+          fullCost,
+          operatingProfit: revenue - fullCost,
           logistics,
           holding,
           margin: revenue - variable - logistics - holding,
@@ -684,19 +779,21 @@
                 : p.id === "bright"
                   ? 2
                   : 1;
-        for (let n = 0; n < 3; n++) {
-          const buyers = clients.filter(
-            (c) =>
-              c.node === nodes[n].id &&
-              (c.segment === segments[segment] || c.segment === segments[5]),
+        for (let n = 0; n < nodes.length; n++) {
+          const eligibleClients = clients.filter(
+            (c) => c.segment === segments[segment] || c.segment === segments[5],
           );
+          const localBuyers = eligibleClients.filter((c) => c.node === nodes[n].id);
+          const buyers = localBuyers.length
+            ? localBuyers
+            : [eligibleClients[n % eligibleClients.length]];
           const totalWeight = sum(buyers, "weight");
           buyers.forEach((c) =>
             customerRows.push({
               month: m,
               client: c.id,
               sku: s.id,
-              node: c.node,
+              node: nodes[n].id,
               demand: (d * nodes[n].share * c.weight) / totalWeight,
               sales: (sales[n] * c.weight) / totalWeight,
             }),
@@ -711,6 +808,9 @@
       revenue: sum(rows, "revenue"),
       margin: sum(rows, "margin"),
       variable: sum(rows, "variable"),
+      fixedCost: sum(rows, "fixedCost"),
+      fullCost: sum(rows, "fullCost"),
+      operatingProfit: sum(rows, "operatingProfit"),
       logistics: sum(rows, "logistics"),
       holding: sum(rows, "holding"),
       gap: sum(rows, "gap"),
@@ -747,6 +847,9 @@
       revenue: sum(rows, "revenue"),
       margin: sum(rows, "margin"),
       variable: sum(rows, "variable"),
+      fixedCost: sum(rows, "fixedCost"),
+      fullCost: sum(rows, "fullCost"),
+      operatingProfit: sum(rows, "operatingProfit"),
       logistics: sum(rows, "logistics"),
       holding: sum(rows, "holding"),
       gap: sum(rows, "gap"),
@@ -774,30 +877,57 @@
     "customerRows",
   ];
 
-  /* 2026 is a shared actual/rolling-estimate baseline. Scenario levers rebuild
-     only the 2027 forecast, so changing a plan never rewrites reported actuals. */
+  /* January–September 2026 is a shared reported baseline. Scenario levers
+     rebuild October 2026 onward and never rewrite those actual months. */
   function runHorizon(config, overrides = {}) {
     if (!actual2026Cache) {
       actual2026Cache = run(
-        scenarios.find((c) => c.id === "balanced"),
+        scenarios.find((c) => c.id === previousSopId),
         { year: 2026 },
       );
     }
     const actual = actual2026Cache;
-    const initialStock = {};
-    for (const s of skus) {
-      initialStock[s.id] = nodes.map(
-        (n) =>
-          actual.ledgers.find(
-            (l) => l.month === 11 && l.sku === s.id && l.node === n.id,
-          ).end,
-      );
-    }
-    const forecast = run(config, { ...overrides, year: 2027, initialStock });
-    const combineYear = (source, year, offset) => {
+    const stockAt = (source, month) => {
+      const snapshot = {};
+      for (const s of skus) {
+        snapshot[s.id] = nodes.map(
+          (n) =>
+            source.ledgers.find(
+              (l) => l.month === month && l.sku === s.id && l.node === n.id,
+            ).end,
+        );
+      }
+      return snapshot;
+    };
+
+    /* January–September is reported actual and is never rebuilt. The active
+       S&OP cycle starts in October 2026 and rolls continuously into 2027. */
+    const previousAt = (source, month) => Object.fromEntries(
+      ["КДМ-9", "БДМ-7"].map((machine) => {
+        const campaigns = source.campaigns
+          .filter((campaign) => campaign.month === month && campaign.machine === machine)
+          .sort((a, b) => a.end - b.end);
+        const last = campaigns[campaigns.length - 1];
+        return [machine, last ? { product: last.product, gram: last.gram } : undefined];
+      }),
+    );
+    const rolling2026 = run(config, {
+      ...overrides,
+      year: 2026,
+      startMonth: 9,
+      initialStock: stockAt(actual, 8),
+      initialPrevious: previousAt(actual, 8),
+    });
+    const forecast = run(config, {
+      ...overrides,
+      year: 2027,
+      initialStock: stockAt(rolling2026, 11),
+      initialPrevious: previousAt(rolling2026, 11),
+    });
+    const combineYear = (source, year, offset, predicate = () => true) => {
       const output = {};
       for (const key of horizonArrays) {
-        output[key] = (source[key] || []).map((row) => {
+        output[key] = (source[key] || []).filter(predicate).map((row) => {
           const clone = {
             ...row,
             month: row.month + offset,
@@ -816,15 +946,24 @@
       }
       return output;
     };
-    const actualPart = combineYear(actual, 2026, 0);
+    const actualPart = combineYear(actual, 2026, 0, (row) => row.month < 9);
+    const rollingPart = combineYear(rolling2026, 2026, 0, (row) => row.month >= 9);
     const forecastPart = combineYear(forecast, 2027, 12);
     const result = {
       config: { ...forecast.config },
       years: [2026, 2027],
-      annual: { 2026: actual.total, 2027: forecast.total },
+      annual: {},
     };
     for (const key of horizonArrays)
-      result[key] = [...actualPart[key], ...forecastPart[key]];
+      result[key] = [...actualPart[key], ...rollingPart[key], ...forecastPart[key]];
+    result.annual[2026] = totalFor(
+      [...actualPart.rows, ...rollingPart.rows],
+      [...actualPart.campaigns, ...rollingPart.campaigns],
+      [...actualPart.cuts, ...rollingPart.cuts],
+      actual.total.initial,
+      11,
+    );
+    result.annual[2027] = forecast.total;
     result.total = totalFor(
       result.rows,
       result.campaigns,
@@ -833,6 +972,20 @@
       23,
     );
     result.checks = validate(result);
+    result.checks.push({
+      name: "Переход запасов сентябрь → октябрь 2026",
+      ok: skus.every((s) =>
+        nodes.every((n) => {
+          const end = result.ledgers.find(
+            (l) => l.month === 8 && l.sku === s.id && l.node === n.id,
+          ).end;
+          const start = result.ledgers.find(
+            (l) => l.month === 9 && l.sku === s.id && l.node === n.id,
+          ).start;
+          return Math.abs(end - start) < 1e-6;
+        }),
+      ),
+    });
     result.checks.push({
       name: "Переход запасов 2026 → 2027",
       ok: skus.every((s) =>
@@ -847,7 +1000,30 @@
         }),
       ),
     });
+    result.checks.push({
+      name: "Факт января–сентября 2026 неизменен",
+      ok: horizonArrays.every((key) => {
+        const expected = (actual[key] || []).filter((row) => row.month < 9);
+        const received = (result[key] || []).filter((row) => row.month < 9);
+        return expected.length === received.length;
+      }),
+    });
     return result;
+  }
+
+  function runBusinessPlan(year = 2026, previous = null) {
+    let initialStock;
+    if (previous) {
+      initialStock = {};
+      for (const s of skus)
+        initialStock[s.id] = nodes.map(
+          (n) =>
+            previous.ledgers.find(
+              (l) => l.month === 11 && l.sku === s.id && l.node === n.id,
+            ).end,
+        );
+    }
+    return run(businessPlan, { year, initialStock });
   }
 
   function forYear(source, year) {
@@ -933,6 +1109,23 @@
         ),
       ],
       [
+        "Полная себестоимость и операциональный результат",
+        r.rows.every(
+          (x) =>
+            Math.abs(x.revenue - x.fullCost - x.operatingProfit) < tol &&
+            Math.abs(
+              x.variable +
+                x.fixedCost +
+                x.logistics +
+                x.holding -
+                x.fullCost,
+            ) < tol &&
+            Math.abs(
+              x.massPrepCost + x.machineCost + x.finishingCost - x.conversionCost,
+            ) < tol,
+        ),
+      ],
+      [
         "Баланс сети за год",
         Math.abs(
           r.total.initial + r.total.production - r.total.sales - r.total.end,
@@ -959,11 +1152,14 @@
     clients,
     segments,
     scenarios,
+    businessPlan,
+    previousSopId,
     sum,
     demand,
     patterns,
     run,
     runHorizon,
+    runBusinessPlan,
     forYear,
     validate,
   };

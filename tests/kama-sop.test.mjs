@@ -5,10 +5,10 @@ import {JSDOM} from 'jsdom';
 import M from '../assets/kama-model.js';
 const plans=M.scenarios.map(c=>M.run(c));
 test('S&OP: complete catalog, annual monthly scope and synthetic network',()=>{
- assert.equal(M.products.length,12);assert.equal(M.skus.length,72);assert.equal(M.clients.length,24);assert.equal(M.nodes.length,3);assert.equal(M.months.length,12);
+ assert.equal(M.products.length,12);assert.equal(M.skus.length,72);assert.equal(M.clients.length,24);assert.equal(M.nodes.length,7);assert.equal(M.months.length,12);
  assert.ok(M.products.some(p=>p.id==='sc'));assert.ok(M.products.some(p=>p.id==='medical'));assert.ok(M.products.some(p=>p.id==='bulk'));
  assert.equal(new Set(M.skus.map(s=>s.id)).size,72);
- for(const r of plans){assert.equal(r.rows.length,864);assert.equal(r.capacities.length,24);assert.equal(r.ledgers.length,2592);assert.equal(r.resources.length,36);}
+ for(const r of plans){assert.equal(r.rows.length,864);assert.equal(r.capacities.length,24);assert.equal(r.ledgers.length,6048);assert.equal(r.resources.length,36);}
 });
 test('S&OP: all five versions reconcile stock, mass, hours, supply, customers and finance',()=>{
  for(const r of plans)for(const check of r.checks)assert.ok(check.ok,`${r.config.id}: ${check.name}`);
@@ -39,7 +39,7 @@ test('S&OP: parameter extremes retain integrity; stress copy keeps supply assump
  }
  const stress=plans[3],copy=M.run({...M.scenarios[3],id:'custom'});assert.deepEqual(copy.resources,stress.resources);
 });
-function browser(){const dom=new JSDOM(readFileSync(new URL('../assets/kama.html',import.meta.url),'utf8'),{url:'http://localhost:8080',runScripts:'outside-only',pretendToBeVisual:true});const w=dom.window;w.eval(readFileSync(new URL('../assets/kama-model.js',import.meta.url),'utf8'));w.eval(readFileSync(new URL('../assets/kama-app.js',import.meta.url),'utf8'));return dom;}
+function browser(){const dom=new JSDOM(readFileSync(new URL('../assets/kama.html',import.meta.url),'utf8'),{url:'http://localhost:8080',runScripts:'outside-only',pretendToBeVisual:true});const w=dom.window;w.eval(readFileSync(new URL('../assets/kama-model.js',import.meta.url),'utf8'));w.eval(readFileSync(new URL('../assets/kama-analytics.js',import.meta.url),'utf8'));w.eval(readFileSync(new URL('../assets/kama-orders.js',import.meta.url),'utf8'));w.eval(readFileSync(new URL('../assets/kama-app.js',import.meta.url),'utf8'));return dom;}
 test('S&OP UI: every section and filter renders without DB or browser errors',()=>{
  const dom=browser(),w=dom.window,d=w.document;try{
  assert.match(d.querySelector('h1').textContent,/Обзор/);assert.equal(d.querySelectorAll('#scenario option').length,5);
@@ -56,6 +56,6 @@ test('S&OP UI: search, pagination, scenario comparison, custom copy and Excel ex
  d.querySelector('#demand-input').value='110';d.querySelector('#cost-input').value='120';d.querySelector('#repair-input').value='100';d.querySelector('#editor').close=()=>{};
  d.querySelector('#editor-form').dispatchEvent(new w.Event('submit',{cancelable:true}));assert.equal(d.querySelector('#scenario').value,'custom');assert.ok(w.localStorage.getItem('kama_sop_custom_v1'));
  d.querySelector('[data-tab="compare"]').click();assert.equal(d.querySelector('#compare-b').value,'custom');d.querySelector('#compare-a').value='stress';d.querySelector('#compare-a').dispatchEvent(new w.Event('change'));assert.equal(d.querySelector('#compare-a').value,'stress');
- w.eval(readFileSync(new URL('../assets/xlsx.full.min.js',import.meta.url),'utf8'));let exported;w.XLSX.writeFile=(wb,name)=>{exported={wb,name};};d.querySelector('#export').click();assert.ok(exported);assert.equal(exported.wb.SheetNames.length,12);assert.equal(w.XLSX.utils.sheet_to_json(exported.wb.Sheets['План SKU']).length,864);assert.match(exported.name,/custom/);
+ w.eval(readFileSync(new URL('../assets/xlsx.full.min.js',import.meta.url),'utf8'));let exported;w.XLSX.writeFile=(wb,name)=>{exported={wb,name};};d.querySelector('#export').click();assert.ok(exported);assert.equal(exported.wb.SheetNames.length,17);assert.equal(w.XLSX.utils.sheet_to_json(exported.wb.Sheets['План SKU']).length,864);assert.match(exported.name,/custom/);
  }finally{w.close();}
 });

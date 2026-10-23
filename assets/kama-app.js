@@ -2,6 +2,8 @@
 (function () {
   "use strict";
   const M = window.KamaModel,
+    A = window.KamaAnalytics,
+    O = window.KamaOrders,
     $ = (s) => document.querySelector(s),
     S = M.sum,
     fmt = (v, d = 0) =>
@@ -37,6 +39,12 @@
       "◴",
       "Спрос и продажи",
       "Спрос и отгрузки по всему ассортименту и сегментам покупателей.",
+    ],
+    [
+      "orders",
+      "✓",
+      "Управление заказами",
+      "Ежедневное согласование портфеля заказов с запасами, кампаниями S&OP и отгрузками.",
     ],
     [
       "production",
@@ -83,6 +91,11 @@
   let results = new Map(
     [...horizonResults].map(([id, r]) => [id, M.forYear(r, year)]),
   );
+  const business2026 = M.runBusinessPlan(2026);
+  const businessResults = new Map([
+    [2026, business2026],
+    [2027, M.runBusinessPlan(2027, business2026)],
+  ]);
   let active = "balanced",
     tab = "overview",
     month = "all",
@@ -92,6 +105,24 @@
     fromMonth = 0,
     toMonth = 11,
     flowMode = "volume",
+    revenueMetric = "revenue",
+    stockMode = "volume",
+    cutMachine = "all",
+    cutPage = 0,
+    segmentReviewOnly = false,
+    segmentOff = new Set(),
+    movementModes = {
+      inbound: "volume",
+      inboundDetail: "supplier",
+      internal: "volume",
+      rc: "volume",
+      rcDetail: "node",
+      customers: "volume",
+      customerDetail: "customer",
+    },
+    orderPlan = null,
+    orderSelected = new Set(),
+    orderNotice = "Портфель загружен · требуется подтверждение пересчётом",
     panelCounter = 0,
     expandedPanel = null;
   const pages = {};
@@ -249,6 +280,9 @@
       revenue: S(rows, "revenue"),
       margin: S(rows, "margin"),
       variable: S(rows, "variable"),
+      fixedCost: S(rows, "fixedCost"),
+      fullCost: S(rows, "fullCost"),
+      operatingProfit: S(rows, "operatingProfit"),
       logistics: S(rows, "logistics"),
       holding: S(rows, "holding"),
       gap: S(rows, "gap"),
@@ -277,7 +311,7 @@
   function panel(title, sub, body, className = "") {
     const id = `panel-${++panelCounter}`;
     const hasChart =
-      body.includes('class="chart"') || body.includes('class="process-sankey"');
+      body.includes('class="chart"') || body.includes('class="chart ') || body.includes('class="process-sankey"');
     return `<section class="panel ${hasChart ? "chart-panel" : ""} ${className}" id="${id}"><div class="panel-head"><div class="panel-heading"><h2>${title}</h2><small>${sub}</small></div><button class="panel-toggle" type="button" data-expand-panel="${id}" aria-expanded="false" aria-controls="${id}-body" aria-label="Развернуть: ${esc(title)}" title="Развернуть почти на весь дашборд"><span class="expand-icon" aria-hidden="true">⛶</span><span>Развернуть</span></button></div><div class="panel-body" id="${id}-body">${body}</div></section>`;
   }
   function table(headers, rows) {
@@ -334,17 +368,25 @@
       svg += `<line x1="${left}" x2="${w - right}" y1="${zeroY}" y2="${zeroY}" stroke="#9eabb9" stroke-width="1.2"/>`;
     if (year === 2026 && !options.compare) {
       const splitX = left + (9 * plotW) / 12;
-      svg += `<line x1="${splitX}" x2="${splitX}" y1="${top}" y2="${top + plotH}" stroke="#aab4c4" stroke-dasharray="3 4"/><text x="${splitX + 5}" y="${top + 10}" class="chart-note">актуализация</text>`;
+      svg += `<line x1="${splitX}" x2="${splitX}" y1="${top}" y2="${top + plotH}" stroke="#aab4c4" stroke-dasharray="3 4"/><text x="${splitX + 5}" y="${top + 10}" class="chart-note">план S&OP</text>`;
     }
     const bars = series.filter((s) => !s.line);
     series.forEach((s, j) => {
       svg += `<g class="chart-series" data-series="${j}">`;
       if (s.line) {
-        const points = s.values
-          .map((v, i) => `${left + ((i + 0.5) * plotW) / 12},${y(v)}`)
-          .join(" ");
-        svg += `<polyline fill="none" stroke="${s.color}" stroke-width="2.4" stroke-dasharray="${s.dashed === false ? "0" : "6 4"}" points="${points}"/>`;
+        let segment = [];
+        const flush = () => {
+          if (segment.length > 1)
+            svg += `<polyline fill="none" stroke="${s.color}" stroke-width="2.4" stroke-dasharray="${s.dashed === false ? "0" : "6 4"}" points="${segment.join(" ")}"/>`;
+          segment = [];
+        };
         s.values.forEach((v, i) => {
+          if (!Number.isFinite(v)) return flush();
+          segment.push(`${left + ((i + 0.5) * plotW) / 12},${y(v)}`);
+        });
+        flush();
+        s.values.forEach((v, i) => {
+          if (!Number.isFinite(v)) return;
           svg += `<circle cx="${left + ((i + 0.5) * plotW) / 12}" cy="${y(v)}" r="3" fill="${s.color}"><title>${M.months[i]} ${s.seriesYear || year} · ${esc(s.name)}: ${fmt(v, 1)} ${unit}</title></circle>`;
         });
       } else {
@@ -352,6 +394,7 @@
         const groupW = (plotW / 12) * 0.74;
         const bw = groupW / Math.max(1, bars.length);
         s.values.forEach((v, i) => {
+          if (!Number.isFinite(v)) return;
           const x =
             left + (i * plotW) / 12 + (plotW / 12 - groupW) / 2 + barIndex * bw;
           const outside = i < fromMonth || i > toMonth;
@@ -369,7 +412,7 @@
     svg += "</svg>";
     const context =
       options.context ||
-      (year === 2026 ? "Янв–сен факт · Окт–дек актуализация" : "Прогноз 2027");
+      (year === 2026 ? "Янв–сен факт · Окт–дек план нового цикла" : "Прогноз 2027");
     return `<div class="chart-block"><div class="legend">${series.map((s, i) => `<button type="button" class="legend-toggle" data-legend="${i}" aria-pressed="true"><i style="background:${s.color}"></i>${s.name}</button>`).join("")}<span class="chart-context">${context} · ${unit}</span></div><div class="chart-scroll">${svg}</div></div>`;
   }
 
@@ -428,265 +471,319 @@
       rows,
     );
   }
+  function metricSum(rows) {
+    return {
+      demand: S(rows, "demand"),
+      sales: S(rows, "sales"),
+      production: S(rows, "production"),
+      revenue: S(rows, "revenue"),
+      margin: S(rows, "margin"),
+      variable: S(rows, "variable"),
+      fixedCost: S(rows, "fixedCost"),
+      fullCost: S(rows, "fullCost"),
+      operatingProfit: S(rows, "operatingProfit"),
+      gap: S(rows, "gap"),
+    };
+  }
+
+  function comparisonFoot(value, plan, formatter = money, suffix = "млн ₽") {
+    const delta = value - plan;
+    const relative = plan ? (delta / Math.abs(plan)) * 100 : 0;
+    return `<span class="${delta >= 0 ? "delta-pos" : "delta-neg"}">${delta >= 0 ? "+" : ""}${formatter(delta)} ${suffix} · ${delta >= 0 ? "+" : ""}${fmt(relative, 1)}%</span> к БП`;
+  }
+
+  function revenueDirectionChart(currentRows, planRows) {
+    const config = {
+      revenue: { key: "revenue", label: "Выручка", unit: "млн ₽", scale: 1e6 },
+      margin: { key: "margin", label: "Маржинальный доход", unit: "млн ₽", scale: 1e6 },
+      sales: { key: "sales", label: "Отгрузки", unit: "т", scale: 1 },
+    }[revenueMetric];
+    const families = ["Картон", "Бумага"].filter(
+      (name) => family === "all" || family === name,
+    );
+    const palette = {
+      Картон: ["#3155d9", "#4769ff", "#6482ff", "#8299ff", "#a24fc4", "#c0659f"],
+      Бумага: ["#087f64", "#19a27b", "#35b493", "#58c3a7", "#7cd0ba", "#9adccb"],
+    };
+    const groups = families.map((name) => {
+      const items = M.products.filter((p) => p.family === name).map((p, index) => {
+        const rows = currentRows.filter((row) => row.product === p.id);
+        const bpRows = planRows.filter((row) => row.product === p.id);
+        const value = S(rows, config.key) / config.scale;
+        const bp = S(bpRows, config.key) / config.scale;
+        return { product: p, value, bp, color: palette[name][index] };
+      });
+      return {
+        name,
+        items,
+        total: S(currentRows.filter((row) => row.family === name), config.key) / config.scale,
+        bp: S(planRows.filter((row) => row.family === name), config.key) / config.scale,
+      };
+    });
+    const maximum = Math.max(1, ...groups.flatMap((g) => g.items.flatMap((d) => [d.value, d.bp])));
+    const rowH = 35, groupH = 45, left = 235, right = 120, top = 40, w = 900;
+    const h = top + groups.reduce((n, g) => n + groupH + g.items.length * rowH, 0) + 20;
+    const plotW = w - left - right;
+    const x = (value) => left + (Math.max(0, value) / maximum) * plotW;
+    let y = top;
+    let svg = `<svg class="chart revenue-mix-chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="${config.label} по направлениям и продуктовым группам"><title>${config.label}: текущий план и бизнес-план по всем продуктовым группам</title>`;
+    for (const group of groups) {
+      const delta = group.bp ? ((group.total - group.bp) / group.bp) * 100 : 0;
+      svg += `<text x="12" y="${y + 18}" class="revenue-group-title">${group.name}</text><text x="${left}" y="${y + 18}" class="revenue-group-total">${fmt(group.total, 1)} ${config.unit}</text><text x="${w - 8}" y="${y + 18}" text-anchor="end" class="${delta >= 0 ? "svg-pos" : "svg-neg"}">${delta >= 0 ? "+" : ""}${fmt(delta, 1)}% к БП</text>`;
+      y += groupH;
+      for (const item of group.items) {
+        const share = group.total ? (item.value / group.total) * 100 : 0;
+        const name = item.product.name.length > 30 ? `${item.product.name.slice(0, 29)}…` : item.product.name;
+        svg += `<text x="${left - 14}" y="${y + 15}" text-anchor="end" class="row-label">${esc(name)}</text><rect x="${left}" y="${y}" width="${plotW}" height="20" rx="5" fill="#f0f3f7"/><rect x="${left}" y="${y}" width="${Math.max(2, x(item.value) - left)}" height="20" rx="5" fill="${item.color}"><title>${esc(item.product.name)} · ${config.label}: ${fmt(item.value, 1)} ${config.unit}; БП ${fmt(item.bp, 1)}; доля направления ${fmt(share, 1)}%</title></rect><line x1="${x(item.bp)}" x2="${x(item.bp)}" y1="${y - 4}" y2="${y + 24}" stroke="#17283e" stroke-width="2"><title>Бизнес-план: ${fmt(item.bp, 1)} ${config.unit}</title></line><text x="${w - 8}" y="${y + 15}" text-anchor="end" class="value">${fmt(item.value, 1)} · ${fmt(share, 0)}%</text>`;
+        y += rowH;
+      }
+      y += 8;
+    }
+    svg += "</svg>";
+    return `<div class="chart-toolbar"><div class="flow-switch" role="group" aria-label="Показатель выручки по направлениям">${[["revenue", "Выручка"], ["margin", "МД"], ["sales", "Отгрузки"]].map(([id, label]) => `<button type="button" data-revenue-metric="${id}" aria-pressed="${revenueMetric === id}">${label}</button>`).join("")}</div><span class="chart-context"><i class="bp-marker"></i> метка — бизнес-план · значение / доля направления</span></div><div class="chart-scroll">${svg}</div>`;
+  }
+
   function overview(r, t) {
-    const base = totals(results.get("base")),
-      last = totals(results.get("balanced"));
-    const actualYear = M.forYear(horizonResults.get(active), 2026);
-    const forecastYear = M.forYear(horizonResults.get(active), 2027);
-    const delta = (x, y) => x - y;
-    const context =
-      year === 2026
-        ? "Факт января–сентября и актуализация IV квартала 2026"
-        : "Прогноз на 2027 год";
-    const familyRevenue = ["Картон", "Бумага"].map((name, i) => ({
-      name,
-      value:
-        S(
-          t.rows.filter((x) => x.family === name),
-          "revenue",
-        ) / 1e6,
-      color: i ? "#19a27b" : "#4769ff",
-    }));
-    const productMargins = M.products
-      .filter((p) => family === "all" || p.family === family)
-      .map((p) => {
-        const rows = t.rows.filter((x) => x.product === p.id);
-        const revenue = S(rows, "revenue");
-        return {
-          name: p.name,
-          value: revenue ? (S(rows, "margin") / revenue) * 100 : 0,
-          color: p.family === "Картон" ? "#4769ff" : "#19a27b",
-        };
-      })
-      .sort((x, y) => y.value - x.value)
-      .slice(0, 6);
-    return `<div class="kpis">${kpi("Выручка", money(t.revenue), "млн ₽", `К базовой версии: ${money(delta(t.revenue, base.revenue))} млн ₽`, true)}${kpi("Маржинальный доход", money(t.margin), "млн ₽", `К бизнес-плану: ${money(delta(t.margin, last.margin))} млн ₽`, true)}${kpi("План отгрузок", fmt(t.sales), "т", `Бизнес-план: ${fmt(last.sales)} т`)}${kpi("Покрытие спроса", pct(t.coverage), "", `Непокрытый спрос: ${fmt(t.gap)} т`)}${kpi("Годный выпуск", fmt(t.production), "т", "После обрези и потерь качества")}${kpi("Запас на конец периода", fmt(t.end), "т", "По выбранному горизонту")}</div>
-      <div class="insight"><strong>${context}.</strong> Денежные показатели без НДС. Факт 2026 года един для всех версий; сценарные решения изменяют только прогноз 2027 года.</div>
-      <div class="grid equal chart-grid">${panel(
-        "Объёмы: спрос, бизнес-план и отгрузки",
-        `Месячная динамика · ${year} · тонны`,
-        chart("Спрос, бизнес-план и отгрузки", [
-          {
-            name: "Неограниченный спрос",
-            values: monthly(r, "demand"),
-            color: "#a1a9b7",
-          },
-          {
-            name: "Бизнес-план",
-            values: monthly({ rows: last.rows }, "sales"),
-            color: "#19a27b",
-          },
-          {
-            name: "План отгрузок",
-            values: monthly(r, "sales"),
-            color: "#4769ff",
-          },
-        ]),
-      )}${panel(
-        "Выручка и маржинальный доход",
-        `Сопоставимый месячный масштаб · ${year} · млн ₽`,
-        chart(
-          "Выручка и маржинальный доход",
-          [
-            {
-              name: "Выручка",
-              values: monthly(r, "revenue").map((x) => x / 1e6),
-              color: "#4769ff",
-            },
-            {
-              name: "Маржинальный доход",
-              values: monthly(r, "margin").map((x) => x / 1e6),
-              color: "#19a27b",
-            },
-          ],
-          "млн ₽",
-        ),
-      )}</div>
-      <div class="grid equal chart-grid">${panel(
-        "2026 → 2027 · отгрузки",
-        "Одноимённые месяцы: факт / актуализация 2026 против прогноза 2027",
-        chart(
-          "Отгрузки год к году",
-          [
-            {
-              name: "2026 · факт / актуализация",
-              values: monthly(actualYear, "sales"),
-              color: "#8b5cf6",
-              seriesYear: 2026,
-            },
-            {
-              name: "2027 · прогноз",
-              values: monthly(forecastYear, "sales"),
-              color: "#4769ff",
-              seriesYear: 2027,
-            },
-          ],
-          "т",
-          { compare: true, context: "2026 → 2027" },
-        ),
-      )}${panel(
-        "2026 → 2027 · маржинальный доход",
-        "Единый масштаб млн ₽ показывает эффект прогнозных допущений",
-        chart(
-          "Маржинальный доход год к году",
-          [
-            {
-              name: "2026 · факт / актуализация",
-              values: monthly(actualYear, "margin").map((x) => x / 1e6),
-              color: "#19a27b",
-              seriesYear: 2026,
-            },
-            {
-              name: "2027 · прогноз",
-              values: monthly(forecastYear, "margin").map((x) => x / 1e6),
-              color: "#4769ff",
-              seriesYear: 2027,
-            },
-          ],
-          "млн ₽",
-          { compare: true, context: "2026 → 2027" },
-        ),
-      )}</div>
-      <div class="grid equal chart-grid">${panel(
-        "Производство и отгрузки",
-        "Годный выпуск сопоставлен с продажами; разница формирует запас",
-        chart("Производство и отгрузки", [
-          {
-            name: "Годный выпуск",
-            values: monthly(r, "production"),
-            color: "#8b5cf6",
-          },
-          { name: "Отгрузки", values: monthly(r, "sales"), color: "#4769ff" },
-        ]),
-      )}${panel(
-        "Запасы и целевой уровень",
-        "Конец месяца и норматив пополнения в тоннах",
-        chart("Запасы и целевой уровень", [
-          { name: "Остаток", values: monthly(r, "end"), color: "#4769ff" },
-          {
-            name: "Целевой запас",
-            values: monthly(r, "target"),
-            color: "#ed0084",
-            line: true,
-          },
-        ]),
-      )}</div>
-      <div class="grid equal chart-grid">${panel("Выручка по направлениям", `Картон и бумага · выбранный период ${year}`, horizontalChart("Выручка по направлениям", familyRevenue, "млн ₽"))}${panel("Маржинальность продуктовых групп", "Топ-6 по доле маржинального дохода в выручке", horizontalChart("Маржинальность по продуктам", productMargins, "%", 1))}</div>
-      ${panel("Помесячная экономика и объём", `${context}; отклонения оцениваются от бизнес-плана`, monthlyTable(r))}`;
+    const previous = results.get(M.previousSopId);
+    const bp = businessResults.get(year);
+    const bpTotals = totals(bp);
+    const factEnd = year === 2026 ? 8 : -1;
+    const remainingStart = year === 2026 ? 9 : 0;
+    const inFamily = (row) => family === "all" || row.family === family;
+    const factRows = previous.rows.filter((row) => row.month <= factEnd && inFamily(row));
+    const remainingRows = previous.rows.filter((row) => row.month >= remainingStart && inFamily(row));
+    const landingRows = previous.rows.filter(inFamily);
+    const bpFactRows = bp.rows.filter((row) => row.month <= factEnd && inFamily(row));
+    const bpRemainingRows = bp.rows.filter((row) => row.month >= remainingStart && inFamily(row));
+    const bpLandingRows = bp.rows.filter(inFamily);
+    const fact = metricSum(factRows), remaining = metricSum(remainingRows), landing = metricSum(landingRows);
+    const bpFact = metricSum(bpFactRows), bpRemaining = metricSum(bpRemainingRows), bpLanding = metricSum(bpLandingRows);
+    const actualForecastMonthly = (key, scale = 1) => M.months.map((_, m) => {
+      if (year === 2026 && m < 9) return null;
+      return S(previous.rows.filter((row) => row.month === m && inFamily(row)), key) / scale;
+    });
+    const actualMonthly = (key, scale = 1) => M.months.map((_, m) => {
+      if (year !== 2026 || m > 8) return null;
+      return S(previous.rows.filter((row) => row.month === m && inFamily(row)), key) / scale;
+    });
+    const bpMonthly = (key, scale = 1) => M.months.map((_, m) => S(bp.rows.filter((row) => row.month === m && inFamily(row)), key) / scale);
+    const landingMonthly = (key, scale = 1) => M.months.map((_, m) => S(previous.rows.filter((row) => row.month === m && inFamily(row)), key) / scale);
+    const periodLabel = year === 2026 ? "Янв–сен 2026" : "2027";
+    const remainingLabel = year === 2026 ? "Окт–дек 2026 · прошлый S&OP" : "Прогноз 2027 · прошлый S&OP";
+    const rowsTable = M.months.map((name, m) => {
+      const currentRows = previous.rows.filter((row) => row.month === m && inFamily(row));
+      const planRows = bp.rows.filter((row) => row.month === m && inFamily(row));
+      const current = metricSum(currentRows), plan = metricSum(planRows);
+      const status = year === 2026 && m < 9 ? "Факт" : "Прогноз прошлого S&OP";
+      return [
+        `${name} ${year}`, status,
+        fmt(plan.sales), fmt(current.sales),
+        `<span class="${current.sales >= plan.sales ? "delta-pos" : "delta-neg"}">${current.sales - plan.sales >= 0 ? "+" : ""}${fmt(current.sales - plan.sales)}</span>`,
+        money(plan.revenue), money(current.revenue),
+        `<span class="${current.revenue >= plan.revenue ? "delta-pos" : "delta-neg"}">${current.revenue - plan.revenue >= 0 ? "+" : ""}${money(current.revenue - plan.revenue)}</span>`,
+        money(current.margin),
+      ];
+    }).filter((_, m) => m >= fromMonth && m <= toMonth);
+    const headline = year === 2026 ? fact : landing;
+    const bpHeadline = year === 2026 ? bpFact : bpLanding;
+    const headlineLabel = year === 2026 ? `факт ${periodLabel}` : "прогноз прошлого S&OP · 2027";
+    const fourth = year === 2026
+      ? kpi("Выручка · оставшийся прогноз", money(remaining.revenue), "млн ₽", `БП ${money(bpRemaining.revenue)} · ${comparisonFoot(remaining.revenue, bpRemaining.revenue)}`)
+      : kpi("Выручка · активный сценарий", money(t.revenue), "млн ₽", `БП ${money(bpTotals.revenue)} · ${comparisonFoot(t.revenue, bpTotals.revenue)}`);
+    const fifth = year === 2026
+      ? kpi("МД · закрытие года", money(landing.margin), "млн ₽", `БП ${money(bpLanding.margin)} · ${comparisonFoot(landing.margin, bpLanding.margin)}`, true)
+      : kpi("МД · активный сценарий", money(t.margin), "млн ₽", `БП ${money(bpTotals.margin)} · ${comparisonFoot(t.margin, bpTotals.margin)}`, true);
+    const sixth = year === 2026
+      ? kpi("Опер. прибыль · закрытие года", money(landing.operatingProfit), "млн ₽", `БП ${money(bpLanding.operatingProfit)} · ${comparisonFoot(landing.operatingProfit, bpLanding.operatingProfit)}`)
+      : kpi("Опер. прибыль · активный сценарий", money(t.operatingProfit), "млн ₽", `БП ${money(bpTotals.operatingProfit)} · ${comparisonFoot(t.operatingProfit, bpTotals.operatingProfit)}`);
+    return `<div class="kpis overview-kpis">
+      ${kpi(`Выручка · ${headlineLabel}`, money(headline.revenue), "млн ₽", `БП ${money(bpHeadline.revenue)} · ${comparisonFoot(headline.revenue, bpHeadline.revenue)}`, true)}
+      ${kpi(`МД · ${headlineLabel}`, money(headline.margin), "млн ₽", `БП ${money(bpHeadline.margin)} · ${comparisonFoot(headline.margin, bpHeadline.margin)}`, true)}
+      ${kpi(`Отгрузки · ${headlineLabel}`, fmt(headline.sales), "т", `БП ${fmt(bpHeadline.sales)} · ${comparisonFoot(headline.sales, bpHeadline.sales, fmt, "т")}`)}
+      ${fourth}${fifth}${sixth}
+    </div>
+    <div class="insight"><strong>Единая база сравнения — утверждённый бизнес-план.</strong> Факт: январь–сентябрь 2026. Оставшийся период: прогноз прошлого цикла S&OP (${esc(previous.config.name)}), а не активный сценарий. План нового цикла начинается с октября 2026; денежные показатели без НДС.</div>
+    <div class="grid equal chart-grid">
+      ${panel("Объём: бизнес-план, факт и оставшийся прогноз", `${remainingLabel} · тонны`, chart("План-факт отгрузок", [
+        { name: "Бизнес-план", values: bpMonthly("sales"), color: "#b8c0cc" },
+        { name: "Факт", values: actualMonthly("sales"), color: "#4769ff" },
+        { name: "Прогноз прошлого S&OP", values: actualForecastMonthly("sales"), color: "#8b5cf6", line: true, dashed: false },
+      ], "т", { compare: true, context: "БП · факт · прошлый S&OP" }))}
+      ${panel("Выручка: закрытие года против бизнес-плана", "Факт и прогноз объединены в ожидаемое закрытие года", chart("Выручка против бизнес-плана", [
+        { name: "Бизнес-план", values: bpMonthly("revenue", 1e6), color: "#b8c0cc" },
+        { name: "Факт", values: actualMonthly("revenue", 1e6), color: "#4769ff" },
+        { name: "Ожидаемое закрытие", values: landingMonthly("revenue", 1e6), color: "#19a27b", line: true, dashed: false },
+        { name: "Отклонение от БП", values: landingMonthly("revenue", 1e6).map((v, i) => v - bpMonthly("revenue", 1e6)[i]), color: "#ed0084", line: true },
+      ], "млн ₽", { compare: true, context: "Отклонение = факт / прогноз − БП" }))}
+    </div>
+    ${panel("Выручка по направлениям", "Укрупнённая группировка по всем продуктовым группам · столбец — текущий план, риска — бизнес-план", revenueDirectionChart(t.rows, bpTotals.rows), "revenue-panel")}
+    <div class="grid equal chart-grid">
+      ${panel("Маржинальный доход: план-факт", "Ожидаемое закрытие и отклонение от бизнес-плана", chart("МД против бизнес-плана", [
+        { name: "Бизнес-план", values: bpMonthly("margin", 1e6), color: "#b8c0cc" },
+        { name: "Факт / прогноз прошлого S&OP", values: landingMonthly("margin", 1e6), color: "#19a27b", line: true, dashed: false },
+        { name: "Отклонение от БП", values: landingMonthly("margin", 1e6).map((v, i) => v - bpMonthly("margin", 1e6)[i]), color: "#ed0084", line: true },
+      ], "млн ₽", { compare: true, context: "Все отклонения от БП" }))}
+      ${panel("Производство и запас против бизнес-плана", "Выпуск — столбцы; конечный запас — линии", chart("Производство и запас против БП", [
+        { name: "Выпуск · БП", values: bpMonthly("production"), color: "#c4ccd7" },
+        { name: "Выпуск · факт / прогноз", values: landingMonthly("production"), color: "#8b5cf6" },
+        { name: "Запас · БП", values: bpMonthly("end"), color: "#ed0084", line: true },
+        { name: "Запас · факт / прогноз", values: landingMonthly("end"), color: "#4769ff", line: true, dashed: false },
+      ], "т", { compare: true, context: "БП и прошлый S&OP" }))}
+    </div>
+    ${panel("План-факт по месяцам", "Факт за прошедший период; оставшийся прогноз строго по прошлому циклу S&OP; Δ = показатель − бизнес-план", table(["Месяц", "Статус", "Отгрузки БП, т", "Факт / прогноз, т", "Δ, т", "Выручка БП, млн ₽", "Факт / прогноз, млн ₽", "Δ выручки", "МД, млн ₽"], rowsTable))}`;
+  }
+
+  function clientAnalytics(r) {
+    const cr = r.customerRows.filter(eligible);
+    const rowMap = new Map(r.rows.map((x) => [`${x.sku}|${x.month}`, x]));
+    const economics = (clientRows, key) => S(clientRows, (x) => {
+      const source = rowMap.get(`${x.sku}|${x.month}`);
+      return source && source.sales ? (x.sales * source[key]) / source.sales : 0;
+    });
+    const otifTargets = [0.96, 0.95, 0.94, 0.95, 0.92, 0.9];
+    const marginTargets = [0.29, 0.25, 0.27, 0.3, 0.21, 0.19];
+    const colors = ["#4769ff", "#19a27b", "#8b5cf6", "#e8930c", "#38a3c7", "#64748b"];
+    const clients = M.clients.map((client, index) => {
+      const rows = cr.filter((x) => x.client === client.id);
+      const demand = S(rows, "demand"), sales = S(rows, "sales");
+      const revenue = economics(rows, "revenue"), margin = economics(rows, "margin");
+      const segmentIndex = M.segments.indexOf(client.segment);
+      const coverage = demand ? sales / demand : 0;
+      const otifTarget = otifTargets[segmentIndex];
+      const otif = Math.max(0.76, Math.min(0.99, coverage * 0.975 + ((index % 5) - 2) * 0.006));
+      const marginRate = revenue ? margin / revenue : 0;
+      const marginTarget = marginTargets[segmentIndex];
+      const review = "", reviewDirection = "";
+      return {
+        ...client, index, rows, demand, sales, coverage, revenue, margin, marginRate,
+        marginTarget, otif, otifTarget, review, reviewDirection,
+        color: colors[segmentIndex], segmentIndex,
+      };
+    });
+    const scores = clients.map((client) => ({
+      client,
+      score: (client.marginRate - client.marginTarget) * 0.7 + (client.otif - client.otifTarget) * 0.3,
+    })).sort((a, b) => a.score - b.score);
+    scores.filter(({ client }) => client.otif < client.otifTarget || client.marginRate < client.marginTarget).slice(0, 3).forEach(({ client }) => {
+      client.review = "На пересмотр: наиболее слабое сочетание маржи и OTIF относительно целей сегмента";
+      client.reviewDirection = "down";
+    });
+    scores.filter((item) => item.score > 0).slice(-2).forEach(({ client }) => {
+      client.review = "На пересмотр: кандидат на повышение по марже и сервису";
+      client.reviewDirection = "up";
+    });
+    const segments = M.segments.map((name, index) => {
+      const clientsInSegment = clients.filter((client) => client.segment === name);
+      const revenue = S(clientsInSegment, "revenue");
+      return {
+        name, index, clients: clientsInSegment, color: colors[index],
+        revenue, margin: S(clientsInSegment, "margin"),
+        demand: S(clientsInSegment, "demand"), sales: S(clientsInSegment, "sales"),
+        otifTarget: otifTargets[index],
+        otif: revenue ? S(clientsInSegment, (client) => client.otif * client.revenue) / revenue : 0,
+      };
+    });
+    return { cr, rowMap, economics, clients, segments };
+  }
+
+  function segmentationMatrix(analytics) {
+    const margins = analytics.clients.map((client) => Math.max(0, client.margin));
+    const min = Math.min(...margins), max = Math.max(...margins);
+    const size = (value) => 48 + Math.sqrt((Math.max(0, value) - min) / Math.max(1, max - min)) * 68;
+    const bands = analytics.segments.map((segment) => {
+      const hidden = segmentOff.has(segment.name);
+      const bubbles = segment.clients.sort((a, b) => b.margin - a.margin).map((client) => {
+        const dim = hidden || (segmentReviewOnly && !client.review);
+        const diameter = size(client.margin);
+        const short = client.name.length > 17 ? `${client.name.slice(0, 16)}…` : client.name;
+        const title = `${client.name} · ${client.segment}. Выручка ${money(client.revenue)} млн ₽; валовая прибыль ${money(client.margin)} млн ₽; маржа ${pct(client.marginRate)}; OTIF ${pct(client.otif)} при цели ${pct(client.otifTarget)}${client.review ? `. ${client.review}` : ""}`;
+        return `<div class="client-bubble ${dim ? "dim" : ""} ${client.reviewDirection ? `review-${client.reviewDirection}` : ""}" style="--bubble:${fmt(diameter, 0)}px;--segment:${client.color}" tabindex="0" title="${esc(title)}" aria-label="${esc(title)}"><span>${esc(short)}</span><strong>${money(client.margin)}</strong><small>млн ₽</small></div>`;
+      }).join("");
+      return `<div class="segment-band ${hidden ? "is-off" : ""}" style="--segment:${segment.color}"><div class="segment-band-head"><div><b>${esc(segment.name)}</b><span>${segment.clients.length} клиента · выручка ${money(segment.revenue)} млн ₽ · валовая прибыль ${money(segment.margin)} млн ₽</span></div><strong>${pct(segment.otif)} OTIF</strong></div><div class="segment-bubbles">${hidden ? '<span class="muted">Сегмент скрыт фильтром</span>' : bubbles}</div></div>`;
+    }).join("");
+    return `<div class="chart-toolbar"><div class="flow-switch" role="group" aria-label="Фильтр клиентов на пересмотр"><button type="button" data-seg-review="all" aria-pressed="${!segmentReviewOnly}">Все клиенты</button><button type="button" data-seg-review="review" aria-pressed="${segmentReviewOnly}">⚑ На пересмотр (${analytics.clients.filter((c) => c.review).length})</button></div><span class="chart-context">Площадь круга — валовая прибыль · кольцо: зелёное ↑ / красное ↓</span></div><div class="segment-matrix">${bands}</div><div class="segment-legend">${analytics.segments.map((segment) => `<button type="button" data-seg-toggle="${esc(segment.name)}" class="${segmentOff.has(segment.name) ? "off" : ""}" aria-pressed="${!segmentOff.has(segment.name)}"><i style="background:${segment.color}"></i>${esc(segment.name)}</button>`).join("")}</div>`;
+  }
+
+  function otifBySegment(analytics) {
+    return `<div class="otif-grid">${analytics.segments.map((segment) => {
+      const delta = (segment.otif - segment.otifTarget) * 100;
+      return `<article class="otif-card" style="--segment:${segment.color}"><div class="otif-head"><div><small>${esc(segment.name)}</small><strong>${pct(segment.otif)}</strong></div><span class="${delta >= 0 ? "delta-pos" : "delta-neg"}">${delta >= 0 ? "+" : ""}${fmt(delta, 1)} п.п.</span></div><div class="otif-track"><i style="width:${Math.min(100, segment.otif * 100)}%"></i><b style="left:${segment.otifTarget * 100}%" title="Цель ${pct(segment.otifTarget)}"></b></div><div class="otif-target">Цель сегмента ${pct(segment.otifTarget)}</div><div class="otif-clients">${segment.clients.map((client) => {
+        const d = (client.otif - client.otifTarget) * 100;
+        return `<div class="otif-client" title="${esc(client.name)}: OTIF ${pct(client.otif)}, цель ${pct(client.otifTarget)}"><span>${esc(client.name)}${client.review ? " ⚑" : ""}</span><div class="mini-otif"><i style="width:${Math.min(100, client.otif * 100)}%"></i></div><b>${pct(client.otif)}</b><em class="${d >= 0 ? "delta-pos" : "delta-neg"}">${d >= 0 ? "+" : ""}${fmt(d, 1)}</em></div>`;
+      }).join("")}</div></article>`;
+    }).join("")}</div>`;
   }
 
   function demandView(r, t) {
-    const rows = M.products
-      .filter((p) => family === "all" || p.family === family)
-      .map((p) => {
-        const rr = t.rows.filter((x) => x.product === p.id);
-        const demand = S(rr, "demand"),
-          sales = S(rr, "sales");
-        return [
-          p.name,
-          fmt(demand),
-          fmt(sales),
-          fmt(S(rr, "gap")),
+    const analytics = clientAnalytics(r);
+    const bp = businessResults.get(year);
+    const bpMonthlySales = M.months.map((_, m) => S(bp.rows.filter((row) => row.month === m && (family === "all" || row.family === family)), "sales"));
+    const segmentItems = analytics.segments.map((segment) => ({ name: segment.name, value: segment.demand, color: segment.color })).sort((a, b) => b.value - a.value);
+    const coverageRows = [];
+    for (const p of M.products.filter((p) => family === "all" || p.family === family)) {
+      for (const client of analytics.clients) {
+        const rows = analytics.cr.filter((x) => x.client === client.id && sku(x.sku)?.product === p.id);
+        const demand = S(rows, "demand");
+        if (demand < 0.001) continue;
+        const sales = S(rows, "sales");
+        const revenue = analytics.economics(rows, "revenue");
+        const margin = analytics.economics(rows, "margin");
+        const marginRate = revenue ? margin / revenue : 0;
+        const delta = (marginRate - client.marginTarget) * 100;
+        coverageRows.push([
+          p.name, esc(client.name), fmt(demand), fmt(sales),
           `<span class="pill ${sales / (demand || 1) < 0.95 ? "warn" : ""}">${pct(sales / (demand || 1))}</span>`,
-          money(S(rr, "revenue")),
-        ];
-      });
-    const cr = r.customerRows.filter(eligible);
-    const rowMap = new Map(r.rows.map((x) => [`${x.sku}|${x.month}`, x]));
-    const economics = (clientRows, key) =>
-      S(clientRows, (x) => {
-        const source = rowMap.get(`${x.sku}|${x.month}`);
-        return source && source.sales
-          ? (x.sales * source[key]) / source.sales
-          : 0;
-      });
-    const clients = M.clients.map((c) => {
-      const rr = cr.filter((x) => x.client === c.id);
-      const demand = S(rr, "demand");
-      return [
-        esc(c.name),
-        esc(c.segment),
-        M.nodes.find((n) => n.id === c.node).name,
-        fmt(demand),
-        fmt(S(rr, "sales")),
-        pct(demand ? S(rr, "sales") / demand : 0),
-      ];
+          money(revenue), money(margin), pct(marginRate), pct(client.marginTarget),
+          `<span class="margin-deviation ${delta < 0 ? "below" : "ok"}">${delta < 0 ? "▼" : "✓"} ${delta >= 0 ? "+" : ""}${fmt(delta, 1)} п.п.</span>`,
+        ]);
+      }
+    }
+    const clientRows = analytics.clients.map((client) => [
+      esc(client.name), esc(client.segment), M.nodes.find((n) => n.id === client.node).name,
+      fmt(client.demand), fmt(client.sales), money(client.revenue), money(client.margin),
+      pct(client.otif), pct(client.otifTarget),
+      client.review ? `<span class="review-label ${client.reviewDirection}">⚑ ${client.reviewDirection === "up" ? "На повышение" : "На пересмотр"}</span>` : "—",
+    ]);
+    return `<div class="kpis">${kpi("Неограниченный спрос", fmt(t.demand), "т", "Сезонность по продуктовым группам", true)}${kpi("План отгрузок", fmt(t.sales), "т", `Бизнес-план: ${fmt(totals(bp).sales)} т`)}${kpi("Непокрытый спрос", fmt(t.gap), "т", "Не является фактом потерянного заказа")}${kpi("Покрытие", pct(t.coverage), "", "Покрытие спроса не равно OTIF")}${kpi("Клиентов на пересмотр", analytics.clients.filter((c) => c.review).length, "", "Отклонение маржи или OTIF от порога", true)}</div>
+      <div class="grid equal chart-grid">${panel("Спрос и отгрузки по месяцам", `Бизнес-план и активный план · полный контекст ${year}`, chart("Спрос, бизнес-план и отгрузки", [
+        { name: "Неограниченный спрос", values: monthly(r, "demand"), color: "#a1a9b7" },
+        { name: "Бизнес-план · отгрузки", values: bpMonthlySales, color: "#19a27b" },
+        { name: "Активный план · отгрузки", values: monthly(r, "sales"), color: "#4769ff" },
+      ]))}${panel("Спрос по клиентским сегментам", "Шесть отраслевых сегментов КАМА · тонны за выбранный период", horizontalChart("Спрос по сегментам", segmentItems, "т", 0))}</div>
+      ${panel("Сегментация клиентов", "Матрица ценности по аналогии с эталонным дашбордом · размер круга — валовая прибыль клиента", segmentationMatrix(analytics), "segmentation-panel")}
+      ${panel("OTIF по сегментам и клиентам", "Факт — взвешенный по выручке; вертикальная метка — цель сегмента; для каждого клиента показано отклонение в п.п.", otifBySegment(analytics), "otif-panel")}
+      ${panel("Покрытие по ассортименту и клиентам", "Продукт × клиент · маржа после переменных затрат, логистики и хранения; красным — ниже целевой маржи сегмента", paged("coverage", ["Продукт", "Клиент", "Спрос, т", "Отгрузки, т", "Покрытие", "Выручка, млн ₽", "Валовая прибыль, млн ₽", "Маржа", "Цель маржи", "Отклонение"], coverageRows))}
+      ${panel("Клиенты, сервис и статус пересмотра", "24 клиента · основной склад и детализация экономики за выбранный период", paged("clients", ["Клиент", "Сегмент", "Основной склад", "Спрос, т", "Отгрузки, т", "Выручка, млн ₽", "Валовая прибыль, млн ₽", "OTIF", "Цель", "Статус"], clientRows))}`;
+  }
+
+  function ordersView() {
+    const orderResult = M.forYear(horizonResults.get(active), 2026);
+    if (!orderPlan) orderPlan = O.planPortfolio(M, orderResult);
+    const date = (value) => {
+      if (!value) return "—";
+      const [y, m, d] = value.split("-");
+      return `${d}.${m}.${y}`;
+    };
+    const nodeName = (id) => M.nodes.find((node) => node.id === id)?.name || id;
+    const plan = orderPlan;
+    const productionRows = O.productionSchedule(plan.results);
+    const orderRows = plan.results.map((result) => {
+      const selected = orderSelected.has(result.orderId);
+      const stock = result.stockStatus === "yes" ? ["Да", "ok"] : result.stockStatus === "partial" ? ["Частично", "partial"] : ["Нет", "no"];
+      return `<tr class="${result.exception ? "order-exception" : ""}"><td><input type="checkbox" data-order-select="${result.orderId}" aria-label="Выбрать ${result.orderId}" ${selected ? "checked" : ""}></td><td><b>${result.orderId}</b><small>${esc(result.customer)} · P${result.priority}</small></td><td>${esc(result.productName)}</td><td>${fmt(result.qty)}</td><td>${date(result.requestedDate)}</td><td><span class="stock-flag ${stock[1]}">${stock[0]}</span><small>${fmt(Math.max(0, result.availableQty))} т на дату проверки</small></td><td>${esc(nodeName(result.sourceNode))}<small>${esc(result.sourceKind)}</small></td><td>${result.productionDate ? `${date(result.productionDate)}<small>${esc(result.machine)} · ${esc(result.campaign)}</small>` : "—"}</td><td>${date(result.shipDate)}</td><td>${date(result.deliveryDate)}</td><td><span class="${result.lateDays ? "delta-neg" : "delta-pos"}">${result.lateDays ? `+${result.lateDays} дн.` : "В срок"}</span></td><td><span class="pill ${result.exception || result.lateDays ? "warn" : ""}">${esc(result.status)}</span></td></tr>`;
+    }).join("");
+    const quotaRows = plan.quotaUsage.map((quota) => {
+      const used = quota.usage * 100;
+      return [quota.productName, quota.month, fmt(quota.plannedSales), fmt(quota.ordered), `<div class="quota-cell"><div class="load-track"><i class="${used > 100 ? "overload" : ""}" style="width:${Math.min(100, used)}%"></i></div><b>${fmt(used, 1)}%</b></div>`, `<span class="${quota.remaining < 0 ? "delta-neg" : "delta-pos"}">${fmt(quota.remaining)}</span>`, used > 100 ? '<span class="pill warn">Сверх квоты</span>' : used > 85 ? '<span class="pill warn">Почти заполнена</span>' : '<span class="pill">Доступна</span>'];
     });
-    const segments = [...new Set(M.clients.map((c) => c.segment))];
-    const segmentItems = segments
-      .map((seg, i) => ({
-        name: seg,
-        value: S(
-          cr.filter(
-            (x) => M.clients.find((c) => c.id === x.client)?.segment === seg,
-          ),
-          "demand",
-        ),
-        color: [
-          "#4769ff",
-          "#19a27b",
-          "#8b5cf6",
-          "#ff8c00",
-          "#a5246c",
-          "#64748b",
-        ][i],
-      }))
-      .sort((a, b) => b.value - a.value);
-    return `<div class="kpis">${kpi("Неограниченный спрос", fmt(t.demand), "т", "Сезонность по продуктовым группам", true)}${kpi("План отгрузок", fmt(t.sales), "т", "Не превышает спрос и доступный запас")}${kpi("Непокрытый спрос", fmt(t.gap), "т", "Не является фактом потерянного заказа")}${kpi("Покрытие", pct(t.coverage), "", "Не OTIF: без дат заказов")}</div>
-      <div class="grid equal chart-grid">${panel(
-        "Спрос и отгрузки по месяцам",
-        `Полный годовой контекст ${year} с подсветкой выбранного периода`,
-        chart("Спрос и отгрузки", [
-          { name: "Спрос", values: monthly(r, "demand"), color: "#a1a9b7" },
-          { name: "Отгрузки", values: monthly(r, "sales"), color: "#4769ff" },
-        ]),
-      )}${panel("Спрос по клиентским сегментам", "Шесть каналов · тонны за выбранный период", horizontalChart("Спрос по сегментам", segmentItems, "т", 0))}</div>
-      ${panel(
-        "Сегментация клиентов",
-        "Портфель покупателей по типам бизнеса: объём спроса и уровень покрытия",
-        `<div class="segment-grid">${segments
-          .map((seg) => {
-            const group = cr.filter(
-              (x) => M.clients.find((c) => c.id === x.client)?.segment === seg,
-            );
-            const demand = S(group, "demand"),
-              coverage = demand ? S(group, "sales") / demand : 0;
-            return `<div class="segment-card"><b>${esc(seg)}</b><strong>${fmt(demand)} т</strong><small>спрос · покрытие ${pct(coverage)} · OTIF модели ${pct(Math.min(0.99, coverage * 0.96))}</small><div class="load-track"><i style="width:${Math.min(100, coverage * 100)}%"></i></div></div>`;
-          })
-          .join("")}</div>`,
-      )}
-      ${panel("Покрытие по ассортименту", "Все текущие продуктовые группы компании", table(["Продукт", "Спрос, т", "Отгрузки, т", "Дефицит, т", "Покрытие", "Выручка, млн ₽"], rows))}
-      ${panel("Клиенты и сегменты", "Сегменты: издательства, типографии, упаковочные производства и дистрибьюторы", paged("clients", ["Клиент", "Сегмент", "Склад отгрузки", "Спрос, т", "Отгрузки, т", "Покрытие"], clients))}
-      ${panel(
-        "Клиентская аналитика: объём и маржинальность",
-        "Экономика распределена пропорционально отгрузкам SKU; WAPE — модельная оценка, не исторический факт",
-        table(
-          [
-            "Клиент",
-            "Сегмент",
-            "Объём спроса, т",
-            "Выручка, млн ₽",
-            "Маржа, млн ₽",
-            "Точность прогноза · оценка",
-          ],
-          M.clients.map((c) => {
-            const rr = cr.filter((x) => x.client === c.id),
-              d = S(rr, "demand");
-            const revenue = economics(rr, "revenue"),
-              margin = economics(rr, "margin");
-            const idx = M.clients.findIndex((y) => y.id === c.id),
-              acc = 0.78 + (idx % 6) * 0.035;
-            return [
-              esc(c.name),
-              esc(c.segment),
-              `<span class="heat-cell">${fmt(d)}</span>`,
-              money(revenue),
-              `<span class="${margin >= 0 ? "delta-pos" : "delta-neg"}">${money(margin)}</span>`,
-              `<span class="heat-cell ${acc < 0.84 ? "hot" : ""}">${pct(acc)}</span>`,
-            ];
-          }),
-        ),
-      )}`;
+    const shipmentRows = [...plan.results].sort((a, b) => a.shipDate.localeCompare(b.shipDate) || a.orderId.localeCompare(b.orderId)).map((result) => [date(result.shipDate), date(result.deliveryDate), result.orderId, esc(result.customer), esc(result.productName), fmt(result.qty), esc(nodeName(result.sourceNode)), result.productionDate ? `${date(result.productionDate)} · ${esc(result.machine)}` : "Из запаса", result.lateDays ? `<span class="delta-neg">+${result.lateDays} дн.</span>` : '<span class="delta-pos">В срок</span>']);
+    return `<div class="order-heading"><div><span class="status">Актуальный портфель · 20 заказов</span><p>Дата расчёта ATP: <strong>${date(plan.asOf)}</strong>. Согласованный план: <strong>${esc(orderResult.config.name)}</strong>. Гранулярность производства и отгрузок — день.</p></div><div class="order-actions"><button type="button" class="button primary" data-order-recalc="all">↻ Пересчитать весь портфель</button><button type="button" class="button" data-order-recalc="selected">Пересчитать выбранные <span class="selection-count">${orderSelected.size}</span></button></div></div>
+      <div class="insight order-notice"><strong>${esc(orderNotice)}.</strong> Сначала проверяется запас РЦ, затем заводской запас. При дефиците создаётся заказ на ближайшую кампанию S&OP; дата отгрузки учитывает готовность, лидтайм пополнения РЦ и доставку клиенту. Плановый выпуск S&OP не дублируется. Портфель показывается целиком независимо от фильтра направления и года.</div>
+      <div class="kpis">${kpi("Заказов в портфеле", plan.summary.orders, "", `${O.customers.length} клиентов · ${fmt(plan.summary.shipmentQty)} т`, true)}${kpi("Покрывается запасом", plan.summary.fromStock, "заказов", "Без нового производственного заказа")}${kpi("Требуют производства", plan.summary.withProduction, "заказов", `${fmt(plan.summary.productionQty)} т к выпуску`, plan.summary.withProduction > 0)}${kpi("С отклонением по дате", plan.summary.late, "заказов", "Позже requested delivery date", plan.summary.late > 0)}${kpi("Исключения SOP", plan.summary.exceptions, "", "Нет доступного объёма в кампаниях", plan.summary.exceptions > 0)}</div>
+      ${panel("Портфель клиентских заказов и доступность", "Отметьте заказы для частичного пересчёта · запас показан на дату проверки с учётом уже зарезервированных заказов", `<div class="table-wrap order-table-wrap"><table class="order-table"><thead><tr><th scope="col"><input type="checkbox" data-order-select-all aria-label="Выбрать все заказы" ${orderSelected.size === O.orders.length ? "checked" : ""}></th><th scope="col">Заказ / клиент</th><th scope="col">Продукт</th><th scope="col">Кол-во, т</th><th scope="col">Требуемая дата</th><th scope="col">Запас доступен</th><th scope="col">Источник</th><th scope="col">Производство</th><th scope="col">Отгрузка</th><th scope="col">Поставка</th><th scope="col">Отклонение</th><th scope="col">Статус</th></tr></thead><tbody>${orderRows}</tbody></table></div>`, "orders-portfolio-panel")}
+      ${panel("Заполнение квоты S&OP по продуктам", "Квота — согласованный план продаж продукта в месяц требуемой поставки; портфель суммируется без двойного счёта", table(["Продукт", "Месяц", "Квота S&OP, т", "Портфель, т", "Заполнение", "Остаток квоты, т", "Статус"], quotaRows), "quota-panel")}
+      ${panel("1 · План производства по суткам и агрегатам", "Только производственные заказы портфеля · привязка к ближайшей кампании согласованного S&OP", table(["Дата", "Агрегат", "Кампания S&OP", "Продукт", "Заказы", "К выпуску, т", "Объём кампании, т", "Доля заказа", "Проверка"], productionRows.map((row) => [date(row.date), row.machine, row.campaign, esc(row.productName), row.orders.join(", "), fmt(row.qty), fmt(row.campaignGood), pct(row.campaignGood ? row.qty / row.campaignGood : 0), row.exceptions ? '<span class="pill red">Вне SOP</span>' : row.qty > row.campaignGood ? '<span class="pill warn">Нужен пересмотр</span>' : '<span class="pill">В кампании</span>'])), "daily-production-panel")}
+      ${panel("2 · План отгрузок", "Дата отгрузки рассчитана после производства (если нужно) и с учётом лидтайма перемещения / последней мили", table(["Отгрузка", "Поставка", "Заказ", "Клиент", "Продукт", "Кол-во, т", "Склад отгрузки", "Производство / запас", "Срок"], shipmentRows), "shipment-plan-panel")}`;
   }
 
   function heat(r, operations = unitOperations(r)) {
@@ -881,6 +978,48 @@
     )}</article>`;
   }
 
+  function campaignTimeline(operations, stage) {
+    const units = [...new Map(operations.capacities.map((c) => [c.machine, c])).values()].filter(
+      (c) => c.stage === stage && (family === "all" || c.family === "all" || c.family === family),
+    );
+    return `<section class="campaign-stage embedded"><h3>Последовательность кампаний · ${esc(stage)}</h3><p class="block-note">Порядок внутри месяца по каждому агрегату; нажмите месяц для детализации.</p>${units.map((unit) => `<div class="campaign-machine"><h4>${esc(unit.name)}</h4>${M.months.map((mn, mi) => {
+      if (mi < fromMonth || mi > toMonth) return "";
+      const c = operations.capacities.find((x) => x.machine === unit.machine && x.month === mi);
+      const cs = operations.campaigns.filter((x) => x.machine === unit.machine && x.month === mi);
+      if (!c) return "";
+      return `<button class="campaign-month ${month === String(mi) ? "selected" : ""}" data-camp-month="${mi}" aria-label="Выбрать кампании ${mn} ${year}"><span>${mn}</span><div class="timeline">${cs.map((x) => `<i style="width:${((x.run + x.setup) / c.calendar) * 100}%" title="${esc(product(x.product).name)} · ${x.gram} г/м² · выпуск ${fmt(x.good)} т · ${fmt(x.run + x.setup, 1)} ч"></i>`).join("")}<i class="repair" style="width:${(c.repair / c.calendar) * 100}%" title="Плановый ремонт · ${fmt(c.repair)} ч"></i></div><small>${fmt(c.run)} ч работы · ${fmt(c.setup)} ч переходов · ${c.used > c.available ? `<b class="delta-neg">дефицит ${fmt(c.used - c.available)} ч</b>` : `резерв ${fmt(c.available - c.used)} ч`}</small></button>`;
+    }).join("")}</div>`).join("")}</section>`;
+  }
+
+  function cuttingPlan(r) {
+    let cuts = r.cuts.filter(eligible);
+    if (cutMachine !== "all") cuts = cuts.filter((cut) => cut.machine === cutMachine);
+    const groups = new Map();
+    for (const cut of cuts) {
+      if (!groups.has(cut.campaign)) groups.set(cut.campaign, []);
+      groups.get(cut.campaign).push(cut);
+    }
+    const campaigns = [...groups.entries()].sort((a, b) => {
+      const ca = a[1][0], cb = b[1][0];
+      return ca.month - cb.month || ca.machine.localeCompare(cb.machine) || a[0].localeCompare(b[0]);
+    });
+    const pageSize = 6, pageCount = Math.max(1, Math.ceil(campaigns.length / pageSize));
+    cutPage = Math.max(0, Math.min(cutPage, pageCount - 1));
+    const visible = campaigns.slice(cutPage * pageSize, (cutPage + 1) * pageSize);
+    const cards = visible.map(([campaignId, rows]) => {
+      const first = rows[0], p = product(first.product);
+      const finishing = p.family === "Картон" ? "ПРС-1" : "ПРС-2";
+      const gross = S(rows, "gross"), good = S(rows, "good");
+      const trim = S(rows, (row) => row.gross * row.trim) / (gross || 1);
+      const patterns = rows.map((cut, index) => {
+        const nums = cut.pattern.split(" + ").map((x) => x.split("×").map(Number));
+        return `<div class="cut-map-row"><div class="cut-map-meta"><span>Схема ${index + 1}</span><b>${esc(cut.pattern)} мм</b><small>${fmt(cut.gross, 1)} т брутто · обрезь ${pct(cut.trim)}</small></div><div class="chart-scroll"><div class="cut-pattern" aria-label="Раскрой ${esc(cut.pattern)}">${nums.flatMap(([count, width]) => Array.from({ length: count }, () => `<span style="width:${(width / cut.deckle) * 100}%">${width}</span>`)).join("")}<span class="waste" style="width:${cut.trim * 100}%" title="Обрезь ${cut.deckle - cut.used} мм"></span></div></div></div>`;
+      }).join("");
+      return `<article class="cut-campaign"><div class="cut-campaign-head"><div><small>${finishing} · источник ${first.machine} · ${M.months[first.month]} ${year}</small><h4>${esc(p.name)} · ${first.gram} г/м²</h4><span>Кампания ${esc(campaignId)}</span></div><div class="cut-total"><strong>${fmt(good)} т</strong><span>годный · обрезь ${pct(trim)}</span></div></div>${patterns}</article>`;
+    }).join("");
+    return `<div class="cutting-plan"><div class="chart-toolbar"><div class="flow-switch" role="group" aria-label="Фильтр карт раскроя по машине">${[["all", "Все машины"], ["КДМ-9", "КДМ-9 → ПРС-1"], ["БДМ-7", "БДМ-7 → ПРС-2"]].map(([id, label]) => `<button type="button" data-cut-machine="${id}" aria-pressed="${cutMachine === id}">${label}</button>`).join("")}</div><span class="chart-context">${campaigns.length} кампаний · ${cuts.length} схем раскроя</span></div><h3>План раскроя по каждой кампании</h3><p class="block-note">Каждая карточка — отдельная производственная кампания; показаны все применённые схемы, а не один иллюстративный пример.</p>${cards || '<div class="insight">Для выбранного фильтра карт раскроя нет.</div>'}<div class="pager"><button class="button" type="button" data-cut-page="-1" ${cutPage === 0 ? "disabled" : ""}>← Предыдущие кампании</button><span>${cutPage + 1} / ${pageCount}</span><button class="button" type="button" data-cut-page="1" ${cutPage >= pageCount - 1 ? "disabled" : ""}>Следующие кампании →</button></div></div>`;
+  }
+
   function productionView(r, t) {
     const operations = unitOperations(r);
     const camps = r.campaigns.filter(eligible),
@@ -899,39 +1038,6 @@
     ].filter(
       (c) => family === "all" || c.family === "all" || c.family === family,
     );
-    const timelines = ["Массоподготовка", "КДМ / БДМ", "Отделка"]
-      .map(
-        (stage) =>
-          `<section class="campaign-stage"><h3>${stage}</h3>${units
-            .filter((u) => u.stage === stage)
-            .map(
-              (unit) =>
-                `<div class="campaign-machine"><h4>${esc(unit.name)}</h4>${M.months
-                  .map((mn, mi) => {
-                    if (mi < fromMonth || mi > toMonth) return "";
-                    const c = operations.capacities.find(
-                      (x) => x.machine === unit.machine && x.month === mi,
-                    );
-                    const cs = operations.campaigns.filter(
-                      (x) => x.machine === unit.machine && x.month === mi,
-                    );
-                    return `<button class="campaign-month ${month === String(mi) ? "selected" : ""}" data-camp-month="${mi}" aria-label="Выбрать кампании ${mn} ${year}"><span>${mn}</span><div class="timeline">${cs.map((x) => `<i style="width:${((x.run + x.setup) / c.calendar) * 100}%" title="${esc(product(x.product).name)} · ${x.gram} г/м² · выпуск ${fmt(x.good)} т · ${fmt(x.run + x.setup, 1)} ч"></i>`).join("")}<i class="repair" style="width:${(c.repair / c.calendar) * 100}%" title="Плановый ремонт · ${fmt(c.repair)} ч"></i></div><small>${fmt(c.run)} ч работы · ${fmt(c.setup)} ч переходов · ${c.used > c.available ? `<b class="delta-neg">дефицит ${fmt(c.used - c.available)} ч</b>` : `резерв ${fmt(c.available - c.used)} ч`}</small></button>`;
-                  })
-                  .join("")}</div>`,
-            )
-            .join("")}</section>`,
-      )
-      .join("");
-
-    const example = cuts.find((c) => c.trim > 0.001) || cuts[0];
-    let cutExample = "<p>Для выбранного фильтра нет карт раскроя.</p>";
-    if (example) {
-      const p = product(example.product),
-        nums = example.pattern
-          .split(" + ")
-          .map((x) => x.split("×").map(Number));
-      cutExample = `<h3>${p.name} · ${example.gram} г/м² · ${M.months[example.month]} ${year}</h3><div class="chart-scroll"><div class="cut-pattern">${nums.flatMap(([count, width]) => Array.from({ length: count }, () => `<span style="width:${(width / example.deckle) * 100}%">${width}</span>`)).join("")}<span class="waste" style="width:${example.trim * 100}%" title="Обрезь ${example.deckle - example.used} мм"></span></div></div><p>Полотно ${example.deckle} мм → ${example.pattern} мм; обрезь ${example.deckle - example.used} мм (${pct(example.trim)}). Годный выпуск учитывает также брак качества.</p>`;
-    }
     const flowCamps = camps;
     const d = flowData(r, flowCamps);
     const fiber = S(camps, "fiber");
@@ -958,25 +1064,8 @@
     const finishingLoss = finishingInput.map(
       (v, i) => v - monthlyCampaigns(r, "good")[i],
     );
-    const yields = ["КДМ-9", "БДМ-7"]
-      .filter(
-        (machine) =>
-          family === "all" ||
-          (family === "Картон" ? machine === "КДМ-9" : machine === "БДМ-7"),
-      )
-      .map((machine) => {
-        const cc = camps.filter((c) => c.machine === machine),
-          g = S(cc, "gross");
-        return {
-          name: `${machine} · выход годного`,
-          value: g ? (S(cc, "good") / g) * 100 : 0,
-          color: machine === "КДМ-9" ? "#4769ff" : "#19a27b",
-        };
-      });
-
     return `<div class="kpis">${kpi("Годный выпуск", fmt(t.production), "т", "После обрези и потерь качества", true)}${kpi("Кампании КДМ / БДМ", fmt(camps.length), "", "Марка × граммаж × проход приоритета")}${kpi("Переналадки всех агрегатов", fmt(S(caps, "setup")), "ч", "КДМ, БДМ, массоподготовка и отделка")}${kpi("Обрезь по ширине", pct(trim / (gross || 1)), "", `${fmt(trim)} т из ${fmt(gross)} т брутто`)}${kpi("Узкие места", fmt(bottlenecks.length), "агрегат·мес.", bottlenecks.length ? "Требуется перенос объёма или увеличение фонда" : "Загрузка не превышает доступный фонд", bottlenecks.length > 0)}</div>
       ${panel("Загрузка производственных агрегатов", "Массоподготовка, КДМ-9, БДМ-7, резка и упаковка · использованные / доступные часы", heat(r, operations))}
-      ${panel("Последовательность кампаний", "Все агрегаты · порядок в месяце, не календарное диспетчерское расписание. Нажмите месяц для фильтра.", timelines, "campaign-panel")}
       ${panel("Сквозной поток агрегатов", "Единый баланс объёма и накопленной стоимости · массоподготовка → КДМ / БДМ → отделка", processFlow(r, flowCamps), "flow-panel")}
       ${panel(
         "Этап 1 · Массоподготовка",
@@ -1003,10 +1092,10 @@
               color: "#4769ff",
             },
           ],
-        )}${table(["Направление", "Брутто, т", "Волокно, т абс. сух.", "Годный, т", "Сквозной выход"], massRows)}`,
+        )}${table(["Направление", "Брутто, т", "Волокно, т абс. сух.", "Годный, т", "Сквозной выход"], massRows)}${campaignTimeline(operations, "Массоподготовка")}`,
         "stage-panel",
       )}
-      ${panel("Этап 2 · КДМ-9 и БДМ-7", "Отдельная специфика картонной и бумажной машин · брутто, годный выпуск, переходы и качество", `<div class="grid equal machine-grid">${family === "Бумага" ? "" : machineDetail(r, "КДМ-9")}${family === "Картон" ? "" : machineDetail(r, "БДМ-7")}</div>`, "stage-panel")}
+      ${panel("Этап 2 · КДМ-9 и БДМ-7", "Отдельная специфика картонной и бумажной машин · брутто, годный выпуск, переходы и качество", `<div class="grid equal machine-grid">${family === "Бумага" ? "" : machineDetail(r, "КДМ-9")}${family === "Картон" ? "" : machineDetail(r, "БДМ-7")}</div>${campaignTimeline(operations, "КДМ / БДМ")}`, "stage-panel")}
       ${panel(
         "Этап 3 · Отделка",
         "Продольная резка, перемотка и упаковка · вход и годный выход согласованы с машинными кампаниями",
@@ -1033,10 +1122,9 @@
             },
             { name: "Потери отделки", values: finishingLoss, color: "#c65562" },
           ],
-        )}`,
+        )}${cuttingPlan(r)}${campaignTimeline(operations, "Отделка")}`,
         "stage-panel",
       )}
-      <div class="grid equal chart-grid">${panel("Карта раскроя · пример", "Целочисленные полосы в пределах обрезной ширины", cutExample)}${panel("Сквозной выход по машинам", "Годный выпуск / брутто за выбранный период", horizontalChart("Выход годного", yields, "%", 2))}</div>
       ${panel(
         "Реестр производственных кампаний",
         "КДМ-9 и БДМ-7 · начало и конец — накопленные часы доступного фонда",
@@ -1099,124 +1187,102 @@
       )}`;
   }
 
-  function resourcesView(r) {
-    const names = {
-      fiber: ["Волокнистое сырьё", "т абс. сух."],
-      coat: ["Компоненты мелования", "т"],
-      energy: ["Электроэнергия", "МВт·ч"],
-      water: ["Оборотная вода", "м³"],
+  function dualAxisChart(title, volumeSeries, costSeries, volumeUnit) {
+    const w = 780, h = 310, left = 68, right = 72, top = 24, bottom = 44;
+    const plotW = w - left - right, plotH = h - top - bottom;
+    const finite = (series) => series.flatMap((s) => s.values).filter(Number.isFinite);
+    const leftValues = finite(volumeSeries), rightValues = finite(costSeries);
+    const leftMax = Math.max(1, ...leftValues) * 1.12;
+    const rightMax = Math.max(1, ...rightValues) * 1.15;
+    const yLeft = (v) => top + (1 - v / leftMax) * plotH;
+    const yRight = (v) => top + (1 - v / rightMax) * plotH;
+    const x = (i) => left + ((i + 0.5) * plotW) / 12;
+    let svg = `<svg class="chart dual-axis-chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(title)}"><title>${esc(title)}</title>`;
+    for (let i = 0; i <= 4; i++) {
+      const y = top + (plotH * i) / 4;
+      const lv = leftMax * (1 - i / 4), rv = rightMax * (1 - i / 4);
+      svg += `<line x1="${left}" x2="${w - right}" y1="${y}" y2="${y}" stroke="#e8edf1"/><text x="${left - 9}" y="${y + 4}" text-anchor="end">${fmt(lv, lv < 10 ? 1 : 0)}</text><text x="${w - right + 9}" y="${y + 4}">${fmt(rv, rv < 10 ? 1 : 0)}</text>`;
+    }
+    const bars = volumeSeries.filter((s) => !s.line);
+    let seriesIndex = 0;
+    const drawLine = (s, yScale, index) => {
+      let out = `<g class="chart-series" data-series="${index}">`, points = [];
+      const flush = () => {
+        if (points.length > 1) out += `<polyline fill="none" stroke="${s.color}" stroke-width="2.2" stroke-dasharray="${s.dashed === false ? "0" : "6 4"}" points="${points.join(" ")}"/>`;
+        points = [];
+      };
+      s.values.forEach((v, i) => {
+        if (!Number.isFinite(v)) return flush();
+        points.push(`${x(i)},${yScale(v)}`);
+      });
+      flush();
+      s.values.forEach((v, i) => {
+        if (Number.isFinite(v)) out += `<circle cx="${x(i)}" cy="${yScale(v)}" r="2.8" fill="${s.color}"><title>${M.months[i]} · ${esc(s.name)}: ${fmt(v, 1)}</title></circle>`;
+      });
+      return `${out}</g>`;
     };
+    volumeSeries.forEach((s) => {
+      const index = seriesIndex++;
+      if (s.line) svg += drawLine(s, yLeft, index);
+      else {
+        const barIndex = bars.indexOf(s), groupW = (plotW / 12) * 0.68, bw = groupW / Math.max(1, bars.length);
+        svg += `<g class="chart-series" data-series="${index}">`;
+        s.values.forEach((v, i) => {
+          if (!Number.isFinite(v)) return;
+          const bx = left + (i * plotW) / 12 + (plotW / 12 - groupW) / 2 + barIndex * bw;
+          const outside = i < fromMonth || i > toMonth;
+          svg += `<rect x="${bx}" y="${yLeft(v)}" width="${Math.max(2, bw - 2)}" height="${Math.max(0.5, top + plotH - yLeft(v))}" rx="2" fill="${s.color}" opacity="${outside ? 0.18 : 0.9}"><title>${M.months[i]} · ${esc(s.name)}: ${fmt(v, 1)} ${volumeUnit}</title></rect>`;
+        });
+        svg += "</g>";
+      }
+    });
+    costSeries.forEach((s) => { svg += drawLine(s, yRight, seriesIndex++); });
+    M.months.forEach((name, i) => { svg += `<text x="${x(i)}" y="${h - 13}" text-anchor="middle">${name}</text>`; });
+    svg += `<text x="${left}" y="12" class="axis-title">${esc(volumeUnit)}</text><text x="${w - right}" y="12" text-anchor="end" class="axis-title">млн ₽</text></svg>`;
+    const all = [...volumeSeries, ...costSeries];
+    return `<div class="chart-block"><div class="legend">${all.map((s, i) => `<button type="button" class="legend-toggle" data-legend="${i}" aria-pressed="true"><i style="background:${s.color}"></i>${s.name}</button>`).join("")}</div><div class="chart-scroll">${svg}</div></div>`;
+  }
+
+  function resourcesView(r) {
+    const names = A.resourceMeta;
     const allResources = [...r.resources, ...(r.utilities || [])];
-    const rr = allResources.filter(
-      (x) => x.month >= fromMonth && x.month <= toMonth,
-    );
-    const cards = Object.entries(names)
-      .map(([id, [name, unit]]) => {
-        const rows = rr.filter((x) => x.id === id),
-          used = S(rows, "used"),
-          cap = S(rows, "available");
-        return panel(
-          name,
-          `${unit} · общий ресурс площадки`,
-          `<div class="kpi-value">${fmt(used)} <span class="kpi-unit">из ${fmt(cap)}</span></div><div class="progress"><span style="width:${Math.min(100, (used / (cap || 1)) * 100)}%"></span></div><p>Использование ${pct(used / (cap || 1))} · резерв ${fmt(cap - used)} ${unit}</p>`,
-        );
-      })
-      .join("");
-    const productFiber = M.products
-      .filter((p) => family === "all" || p.family === family)
-      .map((p) => ({
-        name: p.name,
-        value: S(
-          r.campaigns.filter(
-            (c) =>
-              c.product === p.id && c.month >= fromMonth && c.month <= toMonth,
-          ),
-          "fiber",
-        ),
-        color: p.family === "Картон" ? "#4769ff" : "#19a27b",
-      }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 6);
-    const monthlyResource = (id) =>
-      M.months.map(
-        (_, m) =>
-          S(
-            allResources.filter((x) => x.id === id && x.month === m),
-            "used",
-          ) / 1000,
-      );
-    return `<div class="insight">Лимиты ресурсов показаны <strong>для всей площадки</strong>. Расход зависит от брутто-выпуска, а не от продаж. Вода учитывается в ограничении выпуска и в себестоимости, но не смешивается с тоннами волокна.</div><div class="catalog resource-catalog">${cards}</div>
-      <div class="grid equal chart-grid">${panel(
-        "Динамика использования ресурсов",
-        "Фактический расход модели · тыс. единиц соответствующего ресурса",
-        chart(
-          "Использование ресурсов",
-          [
-            {
-              name: "Волокно, тыс. т",
-              values: monthlyResource("fiber"),
-              color: "#4769ff",
-            },
-            {
-              name: "Мелование, тыс. т",
-              values: monthlyResource("coat"),
-              color: "#19a27b",
-            },
-            {
-              name: "Энергия, тыс. МВт·ч",
-              values: monthlyResource("energy"),
-              color: "#ff8c00",
-            },
-          ],
-          "тыс. ед.",
-        ),
-      )}${panel("Волокно по продуктовым группам", "Топ-6 · расход на брутто-выпуск за выбранный период", horizontalChart("Волокно по продуктам", productFiber, "т абс. сух.", 0))}</div>
-      ${panel(
-        "Месячные ограничения снабжения",
-        "Лимиты и рецептурные коэффициенты синтетические; месячная проверка не заменяется годовым агрегатом",
-        table(
-          [
-            "Месяц",
-            "Ресурс",
-            "Ед.",
-            "Лимит",
-            "Потребность",
-            "Резерв",
-            "Использование",
-          ],
-          rr.map((x) => [
-            `${M.months[x.month]} ${year}`,
-            names[x.id][0],
-            names[x.id][1],
-            fmt(x.available),
-            fmt(x.used),
-            fmt(x.available - x.used),
-            pct(x.used / (x.available || 1)),
-          ]),
-        ),
-      )}
-      ${panel(
-        "Коэффициенты потребления",
-        "На 1 т брутто-выпуска; укрупнённые допущения, не технологические рецептуры КАМА",
-        table(
-          [
-            "Группа",
-            "Волокно, т/т",
-            "Мелование, т/т",
-            "Энергия, МВт·ч/т",
-            "Вода, м³/т",
-          ],
-          M.products
-            .filter((p) => family === "all" || p.family === family)
-            .map((p) => [
-              p.name,
-              fmt(p.fiber, 3),
-              fmt(p.coat, 3),
-              fmt(p.energy, 2),
-              fmt(18 * Number(r.config.waterIntensity || 1), 1),
-            ]),
-        ),
-      )}`;
+    const bp = businessResults.get(year);
+    const bpResources = [...bp.resources, ...(bp.utilities || [])];
+    const rr = allResources.filter((x) => x.month >= fromMonth && x.month <= toMonth);
+    const monthlyResource = (source, id, key = "used") => M.months.map((_, m) => S(source.filter((x) => x.id === id && x.month === m), key));
+    const actualFactor = [0.97, 1.025, 0.985, 1.04, 0.965, 1.015, 1.035, 0.98, 1.02];
+    const cards = Object.entries(names).map(([id, meta]) => {
+      const rows = rr.filter((x) => x.id === id), used = S(rows, "used"), cap = S(rows, "available");
+      const bpUsed = S(bpResources.filter((x) => x.id === id && x.month >= fromMonth && x.month <= toMonth), "used");
+      const cost = used * meta.tariff, bpCost = bpUsed * meta.tariff;
+      return panel(meta.name, `${meta.unit} · общий ресурс площадки`, `<div class="resource-card-value"><strong>${fmt(used)}</strong><span>${meta.unit}</span></div><div class="progress"><span style="width:${Math.min(100, (used / (cap || 1)) * 100)}%"></span></div><div class="resource-card-grid"><span>Затраты <b>${money(cost)} млн ₽</b></span><span>БП <b>${money(bpCost)} млн ₽</b></span><span>Отклонение <b class="${cost <= bpCost ? "delta-pos" : "delta-neg"}">${cost - bpCost >= 0 ? "+" : ""}${money(cost - bpCost)} млн ₽</b></span><span>Резерв <b>${fmt(cap - used)} ${meta.unit}</b></span></div>`);
+    }).join("");
+    const resourceCharts = Object.entries(names).map(([id, meta]) => {
+      const plan = monthlyResource(allResources, id);
+      const bpPlan = monthlyResource(bpResources, id);
+      const target = monthlyResource(allResources, id, "available").map((value) => value * meta.target);
+      const actual = plan.map((value, m) => year === 2026 && m < 9 ? value * actualFactor[m] : null);
+      const cost = (values, factor = 1) => values.map((value, m) => Number.isFinite(value) ? (value * meta.tariff * factor * (1 + m * 0.0015)) / 1e6 : null);
+      return panel(`Динамика · ${meta.name}`, `Левая ось: ${meta.unit}; правая ось: затраты, млн ₽ · цель — максимально допустимое потребление`, dualAxisChart(`${meta.name}: объём и затраты`, [
+        { name: "План S&OP", values: plan, color: meta.color },
+        { name: "Факт", values: actual, color: "#27364a" },
+        { name: "Целевое значение", values: target, color: "#ed0084", line: true },
+      ], [
+        { name: "Затраты · план", values: cost(plan), color: "#8b5cf6", dashed: false },
+        { name: "Затраты · факт", values: cost(actual, 1.025), color: "#e8930c", dashed: false },
+        { name: "Затраты · БП", values: cost(bpPlan), color: "#94a3b8" },
+      ], meta.unit), "resource-dynamic");
+    }).join("");
+    const productFiber = M.products.filter((p) => family === "all" || p.family === family).map((p) => ({
+      name: p.name,
+      value: S(r.campaigns.filter((c) => c.product === p.id && c.month >= fromMonth && c.month <= toMonth), "fiber"),
+      color: p.family === "Картон" ? "#4769ff" : "#19a27b",
+    })).sort((a, b) => b.value - a.value).slice(0, 6);
+    return `<div class="insight">Для каждого ресурса показаны <strong>отдельно натуральный объём и денежные затраты</strong>. Факт — январь–сентябрь 2026; план — активный сценарий S&OP; бизнес-план — независимая база затрат. Цель рассчитана от доступного месячного лимита.</div><div class="catalog resource-catalog">${cards}</div>
+      <div class="grid equal chart-grid resource-charts">${resourceCharts}</div>
+      ${panel("Волокно по продуктовым группам", "Топ-6 · расход на брутто-выпуск за выбранный период", horizontalChart("Волокно по продуктам", productFiber, "т абс. сух.", 0))}
+      ${panel("Месячные ограничения снабжения", "Лимиты и рецептурные коэффициенты синтетические; месячная проверка не заменяется годовым агрегатом", table(["Месяц", "Ресурс", "Ед.", "Лимит", "Потребность", "Резерв", "Использование"], rr.map((x) => [`${M.months[x.month]} ${year}`, names[x.id].name, names[x.id].unit, fmt(x.available), fmt(x.used), fmt(x.available - x.used), pct(x.used / (x.available || 1))])))}
+      ${panel("Коэффициенты потребления", "На 1 т брутто-выпуска; укрупнённые допущения, не технологические рецептуры КАМА", table(["Группа", "Волокно, т/т", "Мелование, т/т", "Энергия, МВт·ч/т", "Вода, м³/т"], M.products.filter((p) => family === "all" || p.family === family).map((p) => [p.name, fmt(p.fiber, 3), fmt(p.coat, 3), fmt(p.energy, 2), fmt(18 * Number(r.config.waterIntensity || 1), 1)])))}`;
   }
 
   function capacityView(r, t) {
@@ -1378,6 +1444,41 @@
     )}<div class="insight">ЦОС и расходы ТМЦ пока являются оценочными прокси, а не исходными данными предприятия. Для точных загрузок нужны мощности/планы смен ЦОС и ТМЦ, фактический водный баланс и тарифы энергоносителей.</div>`;
   }
 
+  function stockGroupDynamics(r) {
+    const previous = results.get(M.previousSopId);
+    const resources = [...r.resources, ...(r.utilities || [])];
+    const previousResources = [...previous.resources, ...(previous.utilities || [])];
+    const valueMode = stockMode === "value";
+    const actualFactor = [1.04, 0.97, 1.02, 0.96, 1.06, 0.99, 1.03, 0.95, 1.01];
+    const raw = (id) => {
+      const meta = A.resourceMeta[id];
+      const plan = M.months.map((_, m) => S(resources.filter((x) => x.id === id && x.month === m), "used") * (id === "fiber" ? 0.22 : 0.26));
+      const actual = M.months.map((_, m) => year === 2026 && m < 9 ? S(previousResources.filter((x) => x.id === id && x.month === m), "used") * (id === "fiber" ? 0.22 : 0.26) * actualFactor[m] : null);
+      const target = plan.map((_, m) => S(resources.filter((x) => x.id === id && x.month === m), "used") * (id === "fiber" ? 0.18 : 0.21));
+      const convert = (values) => values.map((v) => Number.isFinite(v) ? (valueMode ? (v * meta.tariff) / 1e6 : v) : null);
+      return { name: meta.name, plan: convert(plan), actual: convert(actual), target: convert(target) };
+    };
+    const finished = (familyName) => {
+      const filter = (rows, m) => rows.filter((x) => x.month === m && x.family === familyName);
+      const planQty = M.months.map((_, m) => S(filter(r.rows, m), "end"));
+      const actualQty = M.months.map((_, m) => year === 2026 && m < 9 ? S(filter(previous.rows, m), "end") * actualFactor[m] : null);
+      const targetQty = M.months.map((_, m) => S(filter(r.rows, m), "target"));
+      const unitCost = M.months.map((_, m) => {
+        const rows = filter(r.rows, m), qty = S(rows, "end");
+        return qty ? S(rows, (x) => x.end * x.unitCost) / qty : 0;
+      });
+      const convert = (values) => values.map((v, m) => Number.isFinite(v) ? (valueMode ? (v * unitCost[m]) / 1e6 : v) : null);
+      return { name: `Готовая продукция · ${familyName}`, plan: convert(planQty), actual: convert(actualQty), target: convert(targetQty) };
+    };
+    const groups = [raw("fiber"), raw("coat"), ...["Картон", "Бумага"].filter((name) => family === "all" || family === name).map(finished)];
+    const unit = valueMode ? "млн ₽" : "т";
+    return `<div class="chart-toolbar"><div class="flow-switch" role="group" aria-label="Единицы динамики запасов"><button type="button" data-stock-mode="volume" aria-pressed="${!valueMode}">Объём, т</button><button type="button" data-stock-mode="value" aria-pressed="${valueMode}">Стоимость, млн ₽</button></div><span class="chart-context">Сырьё оценено по тарифу; ГП — по полной переменной себестоимости запаса</span></div><div class="stock-group-grid">${groups.map((group) => `<section class="stock-mini"><h3>${esc(group.name)}</h3>${chart(`${group.name}: запасы`, [
+      { name: "План S&OP", values: group.plan, color: "#4769ff" },
+      { name: "Факт", values: group.actual, color: "#19a27b" },
+      { name: "Цель", values: group.target, color: "#ed0084", line: true },
+    ], unit, { compare: true, context: "Факт · план · цель" })}</section>`).join("")}</div>`;
+  }
+
   function networkView(r, t) {
     const ledgers = r.ledgers.filter(eligible),
       first = fromMonth,
@@ -1497,19 +1598,7 @@
             money(x.margin),
           ]),
       ),
-    )}${panel("Складская сеть и материальный баланс", "Материальный баланс по заводскому и региональным складам · плановые перемещения внутри месяца", table(["Склад", "Начало, т", "Производство, т", "Приход, т", "Перемещения, т", "Отгрузки, т", "Конец, т", "Ёмкость, т"], nr))}${panel(
-      "Динамика целевого запаса",
-      "Ежемесячный профиль по портфелю; запасы ниже целевого уровня требуют проверки пополнения",
-      chart("Помесячный запас", [
-        { name: "Остаток", values: monthly(r, "end"), color: "#4769ff" },
-        {
-          name: "Целевой запас",
-          values: monthly(r, "target"),
-          color: "#ed0084",
-          line: true,
-        },
-      ]),
-    )}${panel(
+    )}${panel("Складская сеть и материальный баланс", "Материальный баланс по заводскому и региональным складам · плановые перемещения внутри месяца", table(["Склад", "Начало, т", "Производство, т", "Приход, т", "Перемещения, т", "Отгрузки, т", "Конец, т", "Ёмкость, т"], nr))}${panel("Запасы по группам: факт, план и цель", "Сырьё и готовая продукция · переключение натурального и стоимостного выражения", stockGroupDynamics(r), "stock-groups-panel")}${panel(
       "Реестр складских остатков",
       "Проверяемый баланс SKU × узел × месяц",
       paged(
@@ -1540,172 +1629,128 @@
     )}`;
   }
 
-  function movementView(r, t) {
-    const ledgers = r.ledgers.filter(eligible);
-    const routes = M.nodes.map((n) => {
-      const rows = ledgers.filter((l) => l.node === n.id);
-      const inbound = S(rows, "inbound"),
-        sales = S(rows, "sales");
-      const freight = S(rows, "freightCost"),
-        lastMile = S(rows, "lastMileCost");
-      return { n, inbound, sales, freight, lastMile, cost: freight + lastMile };
+  function movementControls(modeKey, detailKey = "", detailOptions = []) {
+    return `<div class="chart-toolbar"><div class="flow-switch" role="group" aria-label="Показатель перемещений"><button type="button" data-movement-mode="${modeKey}" data-value="volume" aria-pressed="${movementModes[modeKey] === "volume"}">Объём, т</button><button type="button" data-movement-mode="${modeKey}" data-value="cost" aria-pressed="${movementModes[modeKey] === "cost"}">Затраты, млн ₽</button></div>${detailKey ? `<div class="flow-switch" role="group" aria-label="Детализация перемещений">${detailOptions.map(([id, label]) => `<button type="button" data-movement-detail="${detailKey}" data-value="${id}" aria-pressed="${movementModes[detailKey] === id}">${label}</button>`).join("")}</div>` : ""}</div>`;
+  }
+
+  function movementMonthlyChart(title, rows, modeKey, detail) {
+    const mode = movementModes[modeKey], palette = ["#4769ff", "#19a27b", "#8b5cf6", "#ff8c00", "#38a3c7", "#a5246c", "#64748b", "#d65f45", "#7d5ab6", "#29859b", "#9b7b32", "#485e78"];
+    const keys = [...new Set(rows.map(detail))].filter(Boolean).sort();
+    const series = keys.map((key, index) => ({
+      name: key,
+      values: M.months.map((_, m) => S(rows.filter((row) => row.month === m && detail(row) === key), (row) => mode === "cost" ? row.cost / 1e6 : row.qty)),
+      color: palette[index % palette.length],
+    }));
+    return chart(title, series, mode === "cost" ? "млн ₽" : "т", { compare: true, context: `${keys.length} детализаций · ${mode === "cost" ? "затраты" : "объём"}` });
+  }
+
+  function nodeCostChart(rows) {
+    const components = [["transport", "Магистраль завод → РЦ", "#4769ff"], ["handling", "Погрузка и обработка", "#8b5cf6"], ["storage", "Хранение", "#19a27b"], ["lastMile", "Последняя миля", "#ff8c00"]];
+    const totals = rows.map((row) => ({ ...row, total: S(components, ([key]) => row[key]) }));
+    const max = Math.max(1, ...totals.map((row) => row.total));
+    const w = 900, left = 220, right = 110, rowH = 54, top = 22, h = top + rows.length * rowH + 30, plotW = w - left - right;
+    let svg = `<svg class="chart node-cost-chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="Детальные затраты по логистическим узлам"><title>Затраты по узлам с разбивкой по четырём компонентам</title>`;
+    totals.forEach((row, i) => {
+      const y = top + i * rowH, label = row.name.length > 28 ? `${row.name.slice(0, 27)}…` : row.name;
+      let x = left;
+      svg += `<text x="${left - 12}" y="${y + 21}" text-anchor="end" class="row-label">${esc(label)}</text><rect x="${left}" y="${y}" width="${plotW}" height="26" rx="5" fill="#f0f3f7"/>`;
+      components.forEach(([key, name, color]) => {
+        const value = row[key] / 1e6, width = (row[key] / max) * plotW;
+        if (width > 0) svg += `<rect x="${x}" y="${y}" width="${Math.max(1, width)}" height="26" fill="${color}"><title>${esc(row.name)} · ${name}: ${money(row[key])} млн ₽</title></rect>`;
+        x += width;
+      });
+      svg += `<text x="${w - 8}" y="${y + 20}" text-anchor="end" class="value">${money(row.total)} млн ₽</text>`;
     });
-    const transfers = S(ledgers, "inbound");
-    const monthlyTransfers = M.months.map((_, m) =>
-      S(
-        r.ledgers.filter((l) => l.month === m && eligible(l)),
-        "inbound",
-      ),
-    );
-    const routeTable = routes.map(
-      ({ n, inbound, sales, freight, lastMile, cost }) => [
-        n.name,
-        n.id === "plant"
-          ? "Прямые отгрузки + пополнение РЦ"
-          : "Завод → РЦ → клиент",
-        fmt(inbound),
-        fmt(sales),
-        money(freight),
-        money(lastMile),
-        money(cost),
-      ],
-    );
-    return `<div class="kpis">${kpi("Узлов сети", "3", "", "Заводской склад · РЦ Москва · РЦ Казань", true)}${kpi("Пополнение РЦ", fmt(transfers), "т", "Фактические перемещения в модели сценария")}${kpi("Затраты на логистику", money(t.logistics), "млн ₽", "Межскладские плечи + последняя миля")}${kpi("Покрытие сети", pct(t.coverage), "", "Отгрузки к неограниченному спросу")}</div>
-      ${panel("Схема логистических потоков", "Поставка сырья, производство, региональное пополнение и отгрузка клиентам", `<div class="process-flow"><span>Поставщики сырья</span><b>→</b><span>Завод КАМА<small>Краснокамск</small></span><b>→</b><span>Склад готовой продукции</span><b>→</b><span>РЦ Москва · Казань</span><b>→</b><span>Клиенты</span></div>`)}
-      <div class="grid equal chart-grid">${panel("Пополнение региональных складов", "Тонны завод → РЦ по месяцам · без двойного счёта клиентских отгрузок", chart("Перемещения завод → РЦ", [{ name: "Пополнение РЦ", values: monthlyTransfers, color: "#4769ff" }]))}${panel(
-        "Логистика и хранение",
-        "Совместимые затраты по месяцам, млн ₽",
-        chart(
-          "Логистические затраты",
-          [
-            {
-              name: "Логистика",
-              values: monthly(r, "logistics").map((x) => x / 1e6),
-              color: "#4769ff",
-            },
-            {
-              name: "Хранение",
-              values: monthly(r, "holding").map((x) => x / 1e6),
-              color: "#19a27b",
-            },
-          ],
-          "млн ₽",
-        ),
-      )}</div>
-      ${panel("Маршруты и стоимость", "Складские проводки сходятся с общей логистикой сценария", table(["Узел", "Маршрут", "Пополнение, т", "Отгрузки, т", "Завод → РЦ, млн ₽", "Последняя миля, млн ₽", "Итого, млн ₽"], routeTable))}
-      ${panel(
-        "Затраты по узлам",
-        "Сравнение полной стоимости пополнения и последней мили",
-        horizontalChart(
-          "Логистика по узлам",
-          routes.map((x, i) => ({
-            name: x.n.name,
-            value: x.cost / 1e6,
-            color: ["#4769ff", "#19a27b", "#ff8c00"][i],
-          })),
-          "млн ₽",
-        ),
-      )}`;
+    svg += "</svg>";
+    return `<div class="legend">${components.map(([, name, color]) => `<span><i style="background:${color}"></i>${name}</span>`).join("")}</div><div class="chart-scroll">${svg}</div>`;
+  }
+
+  function movementView(r, t) {
+    const data = A.movementData(M, r, O.customers);
+    const inFamily = (flow) => family === "all" || !flow.product || product(flow.product)?.family === family;
+    const supplierFlows = data.supplierFlows;
+    const internalFlows = data.internalFlows.filter((flow) => family === "all" || !flow.stage.includes("КДМ-9") && !flow.stage.includes("БДМ-7") || (family === "Картон" ? !flow.stage.includes("БДМ-7") : !flow.stage.includes("КДМ-9")));
+    const rcFlows = data.rcFlows.filter(inFamily);
+    const customerFlows = data.customerFlows.filter(inFamily);
+    const transfers = S(rcFlows, "qty");
+    const routeRows = M.nodes.map((node) => {
+      const inbound = rcFlows.filter((flow) => flow.node === node.id), outbound = customerFlows.filter((flow) => flow.node === node.id);
+      const costs = data.nodeCosts.find((x) => x.node === node.id);
+      return [node.name, node.id === "plant" ? "Прямые отгрузки + пополнение шести РЦ" : "Завод → РЦ → клиент", fmt(S(inbound, "qty")), fmt(S(outbound, "qty")), money(costs.transport), money(costs.handling), money(costs.storage), money(costs.lastMile), money(costs.transport + costs.handling + costs.storage + costs.lastMile)];
+    });
+    const detailFlows = [...supplierFlows, ...internalFlows, ...rcFlows, ...customerFlows].filter((flow) => flow.month >= fromMonth && flow.month <= toMonth && inFamily(flow));
+    const detailRows = detailFlows.map((flow) => [flow.category, `${M.months[flow.month]} ${year}`, flow.from, flow.to, flow.item, fmt(flow.qty, 1), money(flow.cost), `${fmt(flow.lead, 1)} дн.`]);
+    return `<div class="kpis">${kpi("Узлов сети", M.nodes.length, "", "Заводской склад + 6 региональных РЦ", true)}${kpi("Поставщиков сырья", A.suppliers.length, "", "Волокно и компоненты мелования")}${kpi("Пополнение РЦ", fmt(transfers), "т", "Без двойного счёта клиентских отгрузок")}${kpi("Клиентов в плане", O.customers.length, "", "12 именованных получателей")}${kpi("Логистика по S&OP", money(t.logistics), "млн ₽", "Магистраль + последняя миля")}</div>
+      ${panel("Схема логистических потоков", "Все последующие графики и сводная таблица следуют этой цепочке", `<div class="process-flow logistics-chain"><span>Поставщики сырья<small>6 контрагентов</small></span><b>→</b><span>Завод КАМА<small>Краснокамск</small></span><b>→</b><span>Внутризаводские этапы<small>Масса → КДМ/БДМ → отделка</small></span><b>→</b><span>Склад ГП<small>Единый выпуск</small></span><b>→</b><span>6 РЦ<small>Москва · Казань · СПб · Ростов · Екатеринбург · Новосибирск</small></span><b>→</b><span>12 клиентов<small>Продукт / склад / день</small></span></div>`)}
+      ${panel("Поставщики сырья → завод", "Волокно и компоненты мелования · детализация по поставщику или виду сырья", `${movementControls("inbound", "inboundDetail", [["supplier", "По поставщикам"], ["resource", "По видам сырья"]])}${movementMonthlyChart("Входящие поставки", supplierFlows, "inbound", (flow) => movementModes.inboundDetail === "supplier" ? flow.supplier : flow.item)}`)}
+      ${panel("Внутризаводские перемещения", "Склад сырья → массоподготовка → КДМ-9 / БДМ-7 → отделка → склад ГП", `${movementControls("internal")}${movementMonthlyChart("Внутризаводские потоки", internalFlows, "internal", (flow) => flow.stage)}`)}
+      ${panel("Склад готовой продукции → РЦ", "Шесть региональных складов · пополнение по проводкам S&OP", `${movementControls("rc", "rcDetail", [["node", "По РЦ"], ["family", "По направлениям"]])}${movementMonthlyChart("Пополнение региональных РЦ", rcFlows, "rc", (flow) => movementModes.rcDetail === "node" ? flow.to : product(flow.product).family)}`)}
+      ${panel("Отгрузки клиентам", "12 клиентов · исходный склад и продуктовая группа сохранены в каждой строке", `${movementControls("customers", "customerDetail", [["customer", "По клиентам"], ["node", "По складам"], ["family", "По направлениям"]])}${movementMonthlyChart("Клиентские отгрузки", customerFlows, "customers", (flow) => movementModes.customerDetail === "customer" ? flow.to : movementModes.customerDetail === "node" ? flow.from : product(flow.product).family)}`)}
+      ${panel("Затраты по узлам", "Магистраль, погрузка и обработка, хранение, последняя миля · млн ₽ за выбранный год", nodeCostChart(data.nodeCosts), "node-cost-panel")}
+      ${panel("Маршруты и стоимость узлов", "Количественный баланс и четыре компонента затрат по каждому складу", table(["Узел", "Маршрут", "Пополнение, т", "Отгрузки, т", "Магистраль, млн ₽", "Обработка, млн ₽", "Хранение, млн ₽", "Последняя миля, млн ₽", "Итого, млн ₽"], routeRows))}
+      ${panel("Сводный детальный план перемещений", "Поставки сырья, внутризаводские этапы, пополнение РЦ и клиентские отгрузки · месяц × маршрут × продукт", paged("movement-plan", ["Тип", "Месяц", "Откуда", "Куда", "Ресурс / продукт", "Объём, т", "Затраты, млн ₽", "Лидтайм"], detailRows))}`;
+  }
+
+  function marginHeatmap(r) {
+    const products = M.products.filter((p) => family === "all" || p.family === family);
+    const values = products.flatMap((p) => M.months.map((_, m) => S(r.rows.filter((x) => x.product === p.id && x.month === m), "margin") / 1e6));
+    const max = Math.max(1, ...values.map(Math.abs));
+    const rows = products.map((p) => {
+      const productRows = r.rows.filter((x) => x.product === p.id);
+      const cells = M.months.map((_, m) => {
+        const value = S(productRows.filter((x) => x.month === m), "margin") / 1e6;
+        const intensity = Math.min(1, Math.abs(value) / max);
+        return `<td class="finance-heat-cell ${value < 0 ? "negative" : ""}" style="--heat:${intensity.toFixed(3)}" title="${esc(p.name)} · ${M.months[m]}: МД ${fmt(value, 1)} млн ₽">${fmt(value, 1)}</td>`;
+      }).join("");
+      const revenue = S(productRows, "revenue"), margin = S(productRows, "margin");
+      return `<tr><th scope="row">${esc(p.name)}<small>${p.family}</small></th>${cells}<td class="heat-total">${money(margin)}</td><td>${pct(revenue ? margin / revenue : 0)}</td></tr>`;
+    }).join("");
+    const totalsRow = `<tr class="heat-summary"><th scope="row">Итого<small>млн ₽</small></th>${M.months.map((_, m) => `<td>${money(S(r.rows.filter((x) => x.month === m && (family === "all" || x.family === family)), "margin"))}</td>`).join("")}<td>${money(S(r.rows.filter((x) => family === "all" || x.family === family), "margin"))}</td><td>—</td></tr>`;
+    return `<div class="heat-legend finance-legend"><span><i class="heat-low"></i>Низкий МД</span><span><i class="heat-high"></i>Высокий МД</span><span>Красный — отрицательный МД</span></div><div class="table-wrap finance-heat-wrap"><table class="finance-heat"><thead><tr><th scope="col">Продукт</th>${M.months.map((m) => `<th scope="col">${m}</th>`).join("")}<th scope="col">Итого</th><th scope="col">Маржа</th></tr></thead><tbody>${rows}${totalsRow}</tbody></table></div>`;
   }
 
   function financeView(r, t) {
+    const bp = businessResults.get(year), bpt = totals(bp);
     const costStructure = [
-      ["Волокно", "fiberCost", "#4769ff"],
-      ["Мелование", "coatCost", "#19a27b"],
-      ["Энергия", "energyCost", "#ff8c00"],
+      ["Волокнистое сырьё", "fiberCost", "#4769ff"],
+      ["Компоненты мелования", "coatCost", "#19a27b"],
+      ["Электроэнергия", "energyCost", "#ff8c00"],
       ["Вода и ЦОС", "waterCost", "#38a3c7"],
-      ["Прочий передел", "conversionCost", "#8b5cf6"],
-    ].map(([name, key, color]) => ({
-      name,
-      value: S(t.rows, key) / 1e6,
-      color,
-    }));
-    const marginByProduct = M.products
-      .filter((p) => family === "all" || p.family === family)
-      .map((p) => ({
-        name: p.name,
-        value:
-          S(
-            t.rows.filter((x) => x.product === p.id),
-            "margin",
-          ) / 1e6,
-        color: p.family === "Картон" ? "#4769ff" : "#19a27b",
-      }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 6);
-    return `<div class="kpis">${kpi("Выручка", money(t.revenue), "млн ₽", "Отгрузки × цена реализации", true)}${kpi("Переменная себестоимость", money(t.variable), "млн ₽", "Себестоимость только проданного объёма")}${kpi("Маржинальный доход", money(t.margin), "млн ₽", "После логистики и хранения", true)}${kpi("Рентабельность по МД", pct(t.margin / t.revenue), "", "Не EBITDA и не чистая прибыль")}</div><div class="insight">Постоянные затраты, амортизация, проценты, налоги и инвестиции не включены. Непроданные остатки не списываются в себестоимость продаж; хранение — по среднему запасу. Цены и затраты условные, не коммерческие данные компании.</div><div class="grid equal">${panel("Маржинальный доход по месяцам", "Доход после переменных затрат, логистики и хранения", chart("Маржинальный доход", [{ name: "Маржинальный доход", values: monthly(r, "margin").map((x) => x / 1e6), color: "#4769ff" }], "млн ₽"))}${panel(
-      "Waterfall маржинального дохода",
-      "Выручка минус затраты по процессам · компоненты сходятся с маржинальным доходом",
-      `<div class="waterfall">${[
-        ["Выручка", t.revenue, "start"],
-        ["Сырьё и производство", -t.variable, "cost"],
-        ["Логистика", -t.logistics, "cost"],
-        ["Запасы и хранение", -t.holding, "cost"],
-        ["Маржинальный доход", t.margin, "total"],
-      ]
-        .map(
-          ([label, value, type]) =>
-            `<div class="waterfall-col"><strong>${money(Math.abs(value))}</strong><div class="waterfall-bar ${type}" style="height:${Math.max(8, (Math.abs(value) / (Math.max(1, t.revenue) * 1.05)) * 150)}px"></div><small>${label}</small></div>`,
-        )
-        .join(
-          "",
-        )}</div><p>Мост показан в абсолютных суммах; затраты разделены по доступным в модели статьям. Финансовые данные демонстрационные.</p>`,
-    )}</div><div class="grid equal chart-grid">${panel("Структура переменной себестоимости", "Себестоимость проданного объёма по пяти согласованным компонентам", horizontalChart("Структура себестоимости", costStructure, "млн ₽"))}${panel("Маржинальный доход по продуктам", "Топ-6 продуктовых групп за выбранный период", horizontalChart("Маржинальный доход по продуктам", marginByProduct, "млн ₽"))}</div>${panel(
-      "Выручка и затраты по месяцам",
-      "Сопоставление выручки, себестоимости и маржинального результата",
-      chart(
-        "Экономика по месяцам",
-        [
-          {
-            name: "Выручка",
-            values: monthly(r, "revenue").map((x) => x / 1e6),
-            color: "#4769ff",
-          },
-          {
-            name: "Переменные затраты",
-            values: monthly(r, "variable").map((x) => x / 1e6),
-            color: "#a1a9b7",
-          },
-          {
-            name: "Маржинальный доход",
-            values: monthly(r, "margin").map((x) => x / 1e6),
-            color: "#19a27b",
-          },
-        ],
-        "млн ₽",
-      ),
-    )}${panel(
-      "Экономика по ассортименту",
-      "НДС не учитывается · ценовой тренд +0,2% исходной цены в месяц",
-      table(
-        [
-          "Продукт",
-          "Отгрузки, т",
-          "Ср. цена, ₽/т",
-          "Выручка, млн ₽",
-          "Себестоимость",
-          "Логистика",
-          "Хранение",
-          "МД, млн ₽",
-        ],
-        M.products
-          .filter((p) => family === "all" || p.family === family)
-          .map((p) => {
-            const rr = t.rows.filter((x) => x.product === p.id);
-            return [
-              p.name,
-              fmt(S(rr, "sales")),
-              fmt(S(rr, "revenue") / S(rr, "sales") || 0),
-              money(S(rr, "revenue")),
-              money(S(rr, "variable")),
-              money(S(rr, "logistics")),
-              money(S(rr, "holding")),
-              money(S(rr, "margin")),
-            ];
-          }),
-      ),
-    )}`;
+      ["Массоподготовка", "massPrepCost", "#7257d5"],
+      ["КДМ-9 / БДМ-7", "machineCost", "#8b5cf6"],
+      ["Отделка и упаковка", "finishingCost", "#aa7bd4"],
+      ["ФОТ и соц. взносы", "laborCost", "#64748b"],
+      ["Ремонты и обслуживание", "maintenanceCost", "#8291a3"],
+      ["Амортизация", "depreciationCost", "#485e78"],
+      ["Управление и IT", "administrationCost", "#9aa6b5"],
+      ["Коммерческие расходы", "sellingCost", "#b18b9d"],
+    ].map(([name, key, color]) => ({ name, value: S(t.rows, key) / 1e6, color }));
+    costStructure.push(
+      { name: "Логистика", value: t.logistics / 1e6, color: "#e8930c" },
+      { name: "Хранение запасов", value: t.holding / 1e6, color: "#c49a45" },
+    );
+    const bpMonthly = (key) => monthly(bp, key).map((x) => x / 1e6);
+    const activeMonthly = (key) => monthly(r, key).map((x) => x / 1e6);
+    const revenueDeviation = activeMonthly("revenue").map((value, i) => value - bpMonthly("revenue")[i]);
+    const marginDeviation = activeMonthly("margin").map((value, i) => value - bpMonthly("margin")[i]);
+    const fullCostDelta = t.fullCost - bpt.fullCost;
+    return `<div class="kpis">${kpi("Выручка", money(t.revenue), "млн ₽", `БП ${money(bpt.revenue)} · ${comparisonFoot(t.revenue, bpt.revenue)}`, true)}${kpi("Полная себестоимость", money(t.fullCost), "млн ₽", `БП ${money(bpt.fullCost)} · <span class="${fullCostDelta <= 0 ? "delta-pos" : "delta-neg"}">${fullCostDelta >= 0 ? "+" : ""}${money(fullCostDelta)} млн ₽</span> к БП`, true)}${kpi("Маржинальный доход", money(t.margin), "млн ₽", `БП ${money(bpt.margin)} · ${comparisonFoot(t.margin, bpt.margin)}`, true)}${kpi("Операционная прибыль", money(t.operatingProfit), "млн ₽", `БП ${money(bpt.operatingProfit)} · ${comparisonFoot(t.operatingProfit, bpt.operatingProfit)}`)}${kpi("Полная себестоимость на тонну", fmt(t.fullCost / (t.sales || 1)), "₽/т", "Все производственные, логистические и поглощённые постоянные затраты")}</div>
+      ${panel("Выручка и затраты по месяцам", "Выручка и полная себестоимость — столбцы; МД и отклонения от бизнес-плана — кривые · млн ₽", chart("Выручка, полные затраты и отклонения от БП", [
+        { name: "Выручка", values: activeMonthly("revenue"), color: "#4769ff" },
+        { name: "Полная себестоимость", values: activeMonthly("fullCost"), color: "#a1a9b7" },
+        { name: "Маржинальный доход", values: activeMonthly("margin"), color: "#19a27b", line: true, dashed: false },
+        { name: "Δ выручки к БП", values: revenueDeviation, color: "#ed0084", line: true, dashed: false },
+        { name: "Δ МД к БП", values: marginDeviation, color: "#8b5cf6", line: true, dashed: false },
+      ], "млн ₽", { compare: true, context: "Δ = активный план − бизнес-план" }), "finance-top-chart")}
+      <div class="insight"><strong>Полная себестоимость</strong> включает переменное сырьё и переделы, логистику, хранение, ФОТ, ремонты, амортизацию, управление и коммерческие расходы. Маржинальный доход по-прежнему показан до поглощённых постоянных затрат; операционная прибыль — после них. Проценты, налог на прибыль и CAPEX не входят в себестоимость.</div>
+      <div class="grid equal">${panel("Waterfall операционной прибыли", "Выручка минус все компоненты полной себестоимости", `<div class="waterfall">${[["Выручка", t.revenue, "start"], ["Переменное производство", -t.variable, "cost"], ["Логистика", -t.logistics, "cost"], ["Хранение", -t.holding, "cost"], ["Постоянные затраты", -t.fixedCost, "cost"], ["Операционная прибыль", t.operatingProfit, "total"]].map(([label, value, type]) => `<div class="waterfall-col"><strong>${money(Math.abs(value))}</strong><div class="waterfall-bar ${type}" style="height:${Math.max(8, (Math.abs(value) / (Math.max(1, t.revenue) * 1.05)) * 150)}px"></div><small>${label}</small></div>`).join("")}</div><p>Мост сходится с операционной прибылью: выручка − полная себестоимость.</p>`)}${panel("Структура полной себестоимости", "Все переделы примера показаны отдельно: массоподготовка, КДМ/БДМ и отделка", horizontalChart("Полная себестоимость по статьям", costStructure, "млн ₽"))}</div>
+      ${panel("Маржинальный доход по всем продуктам", "Тепловая карта: 12 продуктовых групп × 12 месяцев · млн ₽; интенсивность цвета показывает абсолютный МД", marginHeatmap(r), "margin-heatmap-panel")}
+      ${panel("Экономика по ассортименту", "Полный результат продуктовых групп · НДС не учитывается", table(["Продукт", "Отгрузки, т", "Ср. цена, ₽/т", "Выручка, млн ₽", "Полная себестоимость", "В т.ч. постоянные", "МД, млн ₽", "Опер. прибыль, млн ₽", "Рентабельность"], M.products.filter((p) => family === "all" || p.family === family).map((p) => {
+        const rr = t.rows.filter((x) => x.product === p.id), revenue = S(rr, "revenue"), profit = S(rr, "operatingProfit");
+        return [p.name, fmt(S(rr, "sales")), fmt(revenue / (S(rr, "sales") || 1)), money(revenue), money(S(rr, "fullCost")), money(S(rr, "fixedCost")), money(S(rr, "margin")), money(profit), pct(revenue ? profit / revenue : 0)];
+      })))}`;
   }
+
   function compareView() {
     const ar = results.get(a),
       br = results.get(b),
@@ -1868,6 +1913,7 @@
     const views = {
       overview,
       demand: demandView,
+      orders: ordersView,
       production: productionView,
       resources: resourcesView,
       capacity: capacityView,
@@ -1881,6 +1927,66 @@
   }
 
   function wireContent() {
+    document.querySelectorAll("[data-revenue-metric]").forEach((btn) => (btn.onclick = () => {
+      revenueMetric = btn.dataset.revenueMetric;
+      render();
+    }));
+    document.querySelectorAll("[data-stock-mode]").forEach((btn) => (btn.onclick = () => {
+      stockMode = btn.dataset.stockMode;
+      render();
+    }));
+    document.querySelectorAll("[data-cut-machine]").forEach((btn) => (btn.onclick = () => {
+      cutMachine = btn.dataset.cutMachine;
+      cutPage = 0;
+      render();
+    }));
+    document.querySelectorAll("[data-cut-page]").forEach((btn) => (btn.onclick = () => {
+      cutPage = Math.max(0, cutPage + Number(btn.dataset.cutPage));
+      render();
+    }));
+    document.querySelectorAll("[data-seg-review]").forEach((btn) => (btn.onclick = () => {
+      segmentReviewOnly = btn.dataset.segReview === "review";
+      render();
+    }));
+    document.querySelectorAll("[data-seg-toggle]").forEach((btn) => (btn.onclick = () => {
+      const name = btn.dataset.segToggle;
+      if (segmentOff.has(name)) segmentOff.delete(name);
+      else segmentOff.add(name);
+      render();
+    }));
+    document.querySelectorAll("[data-movement-mode]").forEach((btn) => (btn.onclick = () => {
+      movementModes[btn.dataset.movementMode] = btn.dataset.value;
+      render();
+    }));
+    document.querySelectorAll("[data-movement-detail]").forEach((btn) => (btn.onclick = () => {
+      movementModes[btn.dataset.movementDetail] = btn.dataset.value;
+      render();
+    }));
+    document.querySelectorAll("[data-order-select]").forEach((input) => (input.onchange = () => {
+      if (input.checked) orderSelected.add(input.dataset.orderSelect);
+      else orderSelected.delete(input.dataset.orderSelect);
+      render();
+    }));
+    const selectAll = document.querySelector("[data-order-select-all]");
+    if (selectAll) selectAll.onchange = () => {
+      orderSelected = selectAll.checked ? new Set(O.orders.map((order) => order.id)) : new Set();
+      render();
+    };
+    document.querySelectorAll("[data-order-recalc]").forEach((btn) => (btn.onclick = () => {
+      const onlySelected = btn.dataset.orderRecalc === "selected";
+      if (onlySelected && !orderSelected.size) {
+        toast("Отметьте хотя бы один заказ для частичного пересчёта.");
+        return;
+      }
+      const orderResult = M.forYear(horizonResults.get(active), 2026);
+      orderPlan = O.planPortfolio(M, orderResult, {
+        orderIds: onlySelected ? [...orderSelected] : undefined,
+        previousResults: orderPlan?.results || [],
+      });
+      orderNotice = `${onlySelected ? `Пересчитано заказов: ${orderSelected.size}` : "Пересчитан весь портфель: 20 заказов"} по состоянию на 23.10.2026`;
+      render();
+      toast("ATP, квоты S&OP, производство и отгрузки обновлены.");
+    }));
     document.querySelectorAll("[data-flow-mode]").forEach(
       (btn) =>
         (btn.onclick = () => {
@@ -1993,11 +2099,11 @@
     $("#cycle-tag").textContent = String(year);
     $("#period-status").textContent =
       year === 2026
-        ? "Янв–сен факт · Окт–дек актуализация"
+        ? "Янв–сен факт · Окт–дек план нового цикла"
         : "Прогноз · 12 месяцев";
     $("#footer-period").textContent =
       year === 2026
-        ? "Факт и актуализация: январь — декабрь 2026"
+        ? "Факт январь — сентябрь · план октябрь — декабрь 2026"
         : "Прогноз: январь — декабрь 2027";
     document.querySelectorAll("[data-year]").forEach((btn) => {
       const selected = Number(btn.dataset.year) === year;
@@ -2038,6 +2144,9 @@
   );
   $("#scenario").onchange = (e) => {
     active = e.target.value;
+    orderPlan = null;
+    orderSelected.clear();
+    orderNotice = "Активный план S&OP изменён · выполнен предварительный расчёт";
     Object.keys(pages).forEach((k) => delete pages[k]);
     render();
   };
@@ -2118,13 +2227,14 @@
   }
 
   function initScenarioEditor() {
-    $("#scenario-from").innerHTML = M.months
-      .map((name, i) => `<option value="${i + 12}">${name} 2027</option>`)
-      .join("");
-    $("#scenario-to").innerHTML = $("#scenario-from").innerHTML;
-    $("#repair-month-input").innerHTML = M.months
-      .map((name, i) => `<option value="${i}">${name} 2027</option>`)
-      .join("");
+    const planningMonths = Array.from({ length: 15 }, (_, index) => index + 9);
+    const monthOptions = planningMonths.map((absolute) => {
+      const month = absolute % 12, year = 2026 + Math.floor(absolute / 12);
+      return `<option value="${absolute}">${M.months[month]} ${year}</option>`;
+    }).join("");
+    $("#scenario-from").innerHTML = monthOptions;
+    $("#scenario-to").innerHTML = monthOptions;
+    $("#repair-month-input").innerHTML = M.months.map((name, i) => `<option value="${i}">${name} · календарный месяц</option>`).join("");
     $("#bdm-repair-month-input").innerHTML = $("#repair-month-input").innerHTML;
   }
 
@@ -2176,7 +2286,7 @@
       const scale = Number(el.dataset.scale || 1);
       el.value = String(typeof value === "number" ? value * scale : value);
     });
-    $("#scenario-from").value = String(cfg.periodFrom ?? 12);
+    $("#scenario-from").value = String(cfg.periodFrom ?? 9);
     $("#scenario-to").value = String(cfg.periodTo ?? 23);
     $("#editor-error").textContent = "";
   }
@@ -2221,7 +2331,7 @@
         ...M.scenarios.find((c) => c.id === base),
         id: "custom",
         name: "V6 · Пользовательский сценарий",
-        desc: `Копия ${base}; период ${M.months[params.periodFrom - 12]}–${M.months[params.periodTo - 12]} 2027; спрос ${fmt(params.demandScale * 100)}%, цена ${fmt(params.priceScale * 100)}%, целевой запас ${fmt(params.target * 100)}%.`,
+        desc: `Копия ${base}; период ${M.months[params.periodFrom % 12]} ${2026 + Math.floor(params.periodFrom / 12)}–${M.months[params.periodTo % 12]} ${2026 + Math.floor(params.periodTo / 12)}; спрос ${fmt(params.demandScale * 100)}%, цена ${fmt(params.priceScale * 100)}%, целевой запас ${fmt(params.target * 100)}%.`,
       },
       params,
     );
@@ -2233,9 +2343,15 @@
     }
     const baseForecast = M.forYear(horizonResults.get(base), 2027);
     const customForecast = M.forYear(result, 2027);
-    const marginDelta = customForecast.total.margin - baseForecast.total.margin;
+    const base2026 = M.forYear(horizonResults.get(base), 2026);
+    const custom2026 = M.forYear(result, 2026);
+    const q4Delta = S(custom2026.rows.filter((row) => row.month >= 9), "margin") - S(base2026.rows.filter((row) => row.month >= 9), "margin");
+    const marginDelta = customForecast.total.margin - baseForecast.total.margin + q4Delta;
     custom = { base, params };
     horizonResults.set("custom", result);
+    orderPlan = null;
+    orderSelected.clear();
+    orderNotice = "Создан новый сценарий · портфель рассчитан по его кампаниям";
     active = "custom";
     b = "custom";
     let saved = true;
@@ -2245,10 +2361,10 @@
       saved = false;
     }
     $("#editor").close();
-    setYear(2027, true);
+    setYear(2026, true);
     render();
     toast(
-      `${saved ? "Сценарий сохранён. " : "Сценарий рассчитан без локального сохранения. "}Прогноз 2027: Δ МД ${marginDelta >= 0 ? "+" : ""}${money(marginDelta)} млн ₽.`,
+      `${saved ? "Сценарий сохранён. " : "Сценарий рассчитан без локального сохранения. "}Окт 2026 – дек 2027: Δ МД ${marginDelta >= 0 ? "+" : ""}${money(marginDelta)} млн ₽.`,
     );
   };
 
@@ -2283,9 +2399,10 @@
         {
           Поле: "Статус",
           Значение:
-            year === 2026 ? "Янв–сен факт, Окт–дек актуализация" : "Прогноз",
+            year === 2026 ? "Янв–сен факт, Окт–дек план S&OP" : "Прогноз",
         },
         { Поле: "Деньги", Значение: "Рубли без НДС; объёмы в тоннах" },
+        { Поле: "Портфель заказов", Значение: "20 заказов · ATP на 23.10.2026 · горизонт октябрь–декабрь 2026 независимо от выбранного года" },
         { Поле: "Параметры", Значение: JSON.stringify(r.config) },
       ]);
       add(
@@ -2298,7 +2415,7 @@
             x.dataType === "actual"
               ? "Факт"
               : x.dataType === "estimate"
-                ? "Актуализация"
+                ? "План S&OP"
                 : "Прогноз",
           Спрос_т: x.demand,
           Выпуск_т: x.production,
@@ -2308,9 +2425,12 @@
           Дефицит_т: x.gap,
           Выручка_руб: x.revenue,
           Переменные_затраты_руб: x.variable,
+          Постоянные_затраты_руб: x.fixedCost,
+          Полная_себестоимость_руб: x.fullCost,
           Логистика_руб: x.logistics,
           Хранение_руб: x.holding,
           Маржинальный_доход_руб: x.margin,
+          Операционная_прибыль_руб: x.operatingProfit,
         })),
       );
       add("Кампании", r.campaigns);
@@ -2321,6 +2441,53 @@
       add("Клиентский спрос", r.customerRows);
       add("Клиенты", M.clients);
       add("Ассортимент", M.skus);
+      const bp = businessResults.get(year);
+      add("Бизнес-план", bp.rows.map((x) => ({
+        Месяц: `${M.months[x.month]} ${year}`,
+        SKU: x.sku,
+        Продукт: product(x.product).name,
+        Отгрузки_т: x.sales,
+        Выручка_руб: x.revenue,
+        Полная_себестоимость_руб: x.fullCost,
+        Маржинальный_доход_руб: x.margin,
+        Операционная_прибыль_руб: x.operatingProfit,
+      })));
+      add("Перемещения", A.movementData(M, r, O.customers).all.map((x) => ({
+        Тип: x.category,
+        Месяц: `${M.months[x.month]} ${year}`,
+        Откуда: x.from,
+        Куда: x.to,
+        Продукт_или_ресурс: x.item,
+        Объем_т: x.qty,
+        Затраты_руб: x.cost,
+        Лидтайм_дн: x.lead,
+      })));
+      const orderResult = M.forYear(horizonResults.get(active), 2026);
+      const exportOrders = orderPlan || O.planPortfolio(M, orderResult);
+      add("Портфель заказов", exportOrders.results.map((x) => ({
+        Заказ: x.orderId,
+        Клиент: x.customer,
+        Продукт: x.productName,
+        Количество_т: x.qty,
+        Требуемая_дата: x.requestedDate,
+        Запас_доступен: x.stockStatus,
+        Склад: x.sourceNode,
+        Дата_производства: x.productionDate,
+        Дата_отгрузки: x.shipDate,
+        Дата_поставки: x.deliveryDate,
+        Отклонение_дн: x.lateDays,
+        Статус: x.status,
+      })));
+      add("Производство заказов", O.productionSchedule(exportOrders.results));
+      add("Отгрузки заказов", [...exportOrders.results].sort((a, b) => a.shipDate.localeCompare(b.shipDate)).map((x) => ({
+        Дата_отгрузки: x.shipDate,
+        Дата_поставки: x.deliveryDate,
+        Заказ: x.orderId,
+        Клиент: x.customer,
+        Продукт: x.productName,
+        Количество_т: x.qty,
+        Склад: x.sourceNode,
+      })));
       add(
         "Версии",
         [...results].map(([, x]) => ({ Версия: x.config.name, ...x.total })),

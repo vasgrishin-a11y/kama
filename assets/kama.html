@@ -6,6 +6,8 @@
     <title>КАМА · Интегрированное планирование</title>
     <link rel="stylesheet" href="kama.css" />
     <script src="kama-model.js" defer></script>
+    <script src="kama-analytics.js" defer></script>
+    <script src="kama-orders.js" defer></script>
     <script src="xlsx.full.min.js" defer></script>
     <script src="kama-app.js" defer></script>
   </head>
@@ -99,7 +101,7 @@
                 class="active"
                 aria-pressed="true"
               >
-                2026 <small>факт</small></button
+                2026 <small>факт / план</small></button
               ><button type="button" data-year="2027" aria-pressed="false">
                 2027 <small>прогноз</small>
               </button>
@@ -127,7 +129,7 @@
           >
           <div class="toolbar-note">
             Единицы: т · млн ₽<br /><span id="period-status"
-              >Янв–сен факт · Окт–дек актуализация</span
+              >Янв–сен факт · Окт–дек план нового цикла</span
             >
           </div>
         </div>
@@ -146,7 +148,7 @@
         <footer>
           <span>In.Plan · КАМА · Интегрированное планирование</span
           ><span id="footer-period"
-            >Факт и актуализация: январь — декабрь 2026</span
+            >Факт январь — сентябрь · план октябрь — декабрь 2026</span
           >
         </footer>
       </div>
@@ -156,7 +158,7 @@
       <form id="editor-form">
         <div class="editor-heading">
           <div>
-            <div class="eyebrow">ПОЛЬЗОВАТЕЛЬСКАЯ КОПИЯ · ПРОГНОЗ 2027</div>
+            <div class="eyebrow">ПОЛЬЗОВАТЕЛЬСКАЯ КОПИЯ · ПЛАН С ОКТЯБРЯ 2026</div>
             <h2 id="editor-title">Параметры сценария</h2>
             <p>
               Пять штатных версий останутся неизменными. Параметры пересчитают
@@ -180,8 +182,9 @@
           <div>
             <h3 id="scenario-period-title">Период применения изменений</h3>
             <p>
-              Факт 2026 года не изменяется. За пределами выбранного диапазона
-              действуют параметры копируемой версии.
+              Факт января–сентября 2026 года не изменяется. Новый цикл
+              планирования начинается с октября 2026; за пределами выбранного
+              диапазона действуют параметры копируемой версии.
             </p>
           </div>
           <label>С<select id="scenario-from"></select></label
