@@ -1,10 +1,625 @@
 <!doctype html>
-<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>КАМА · Интегрированное планирование</title><link rel="stylesheet" href="kama.css"><script src="kama-model.js" defer></script><script src="xlsx.full.min.js" defer></script><script src="kama-app.js" defer></script></head>
-<body><a class="skip" href="#main">Перейти к содержимому</a>
-<aside class="sidebar"><a class="brand" href="kama.html" aria-label="In.Plan · КАМА, главная"><img class="inplan-logo" src="inplan-logo.png" alt="In.Plan" width="158" height="42"></a><div class="workspace">РАБОЧЕЕ ПРОСТРАНСТВО<small>КАМА · Краснокамск</small><span class="workspace-cycle">S&OP / 2026</span></div><nav id="nav" aria-label="Разделы планирования"></nav><div class="side-bottom"><span class="live-dot"></span> Планирование производства<small>Краснокамск · 2026</small></div></aside>
-<div class="shell"><header><div><span class="breadcrumb">КАМА / Интегрированное планирование</span><div class="header-title">Цикл S&OP <span class="tag">2026</span></div></div><div class="header-actions"><button id="edit" class="button">Настроить сценарий</button><button id="export" class="button primary">↓ Экспорт Excel</button></div></header>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>КАМА · Интегрированное планирование</title>
+    <link rel="stylesheet" href="kama.css" />
+    <script src="kama-model.js" defer></script>
+    <script src="xlsx.full.min.js" defer></script>
+    <script src="kama-app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip" href="#main">Перейти к содержимому</a>
+    <div class="app" id="app">
+      <aside class="sidebar" id="sidebar" aria-label="Панель разделов">
+        <a class="brand" href="kama.html" aria-label="In.Plan · КАМА, главная">
+          <img
+            class="inplan-logo"
+            src="inplan-logo.png"
+            alt="In.Plan"
+            width="158"
+            height="42"
+          />
+        </a>
+        <div class="workspace">
+          РАБОЧЕЕ ПРОСТРАНСТВО<small>КАМА · Краснокамск</small
+          ><span class="workspace-cycle">S&OP / 2026–2027</span>
+        </div>
+        <nav id="nav" aria-label="Разделы планирования"></nav>
+        <div class="side-bottom">
+          <span class="live-dot"></span
+          ><span class="nav-label">Планирование производства</span
+          ><small>Краснокамск · 2026–2027</small>
+        </div>
+      </aside>
 
-<div class="toolbar"><label class="scenario-control">АКТИВНЫЙ ПЛАН<select id="scenario"></select></label><label>ПЕРИОД<select id="month"><option value="all">Весь год · 2026</option><option value="q1">I квартал</option><option value="q2">II квартал</option><option value="q3">III квартал</option><option value="q4">IV квартал</option></select></label><label>С <select id="fromMonth"></select></label><label>ПО <select id="toMonth"></select></label><label>НАПРАВЛЕНИЕ<select id="family"><option value="all">Весь ассортимент</option><option>Картон</option><option>Бумага</option></select></label><div class="toolbar-note">Единицы: т · млн ₽<br>Финансы без НДС</div></div>
-<main id="main" tabindex="-1"><div class="page-heading"><div><div class="eyebrow">ОБЗОР ЦИКЛА ПЛАНИРОВАНИЯ</div><h1 id="title"></h1><p id="subtitle"></p></div><span class="status" id="validation" aria-hidden="true"></span></div><div id="content" aria-live="polite"></div></main><footer>In.Plan · КАМА · Интегрированное планирование <span>Планирование: январь — декабрь 2026</span></footer></div>
-<dialog id="editor" aria-labelledby="editor-title"><form id="editor-form"><div class="eyebrow">ПОЛЬЗОВАТЕЛЬСКАЯ КОПИЯ</div><h2 id="editor-title">Параметры сценария</h2><p>Исходные пять версий останутся неизменными. Изменения пересчитают кампании, раскрой, запасы и экономику.</p><label>Спрос, % от исходного <input id="demand-input" type="number" min="75" max="125" step="1" required></label><label>Индекс стоимости сырья, % <input id="cost-input" type="number" min="80" max="150" step="1" required></label><label>Дополнительный ремонт КДМ-9 в мае, ч <input id="repair-input" type="number" min="0" max="240" step="1" required></label><p class="muted">При изменении спроса сравнение будет включать и рыночный эффект. Сохраняется только локально в этом браузере.</p><div class="dialog-actions"><button type="button" id="cancel" class="button">Отмена</button><button type="submit" class="button primary">Создать и пересчитать</button></div></form></dialog><div id="toast" role="status"></div>
-</body></html>
+      <div class="shell">
+        <header>
+          <div class="header-main">
+            <div class="nav-controls" role="group" aria-label="Управление меню">
+              <button
+                class="icon-button"
+                id="nav-toggle"
+                type="button"
+                aria-label="Свернуть меню"
+                title="Свернуть / раскрыть меню"
+                aria-expanded="true"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 6h16M4 12h16M4 18h16" />
+                </svg>
+              </button>
+              <button
+                class="icon-button"
+                id="nav-position"
+                type="button"
+                aria-label="Перенести меню наверх"
+                title="Меню: слева / сверху"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="3" y="3" width="18" height="18" rx="3" />
+                  <path class="nav-position-line" d="M9 3v18" />
+                </svg>
+              </button>
+            </div>
+            <div>
+              <span class="breadcrumb"
+                >КАМА / Интегрированное планирование</span
+              >
+              <div class="header-title">
+                Цикл S&amp;OP <span class="tag" id="cycle-tag">2026</span>
+              </div>
+            </div>
+          </div>
+          <div class="header-actions">
+            <button id="edit" class="button" type="button">
+              Настроить сценарий
+            </button>
+            <button id="export" class="button primary" type="button">
+              ↓ Экспорт Excel
+            </button>
+          </div>
+        </header>
+
+        <div class="toolbar" aria-label="Фильтры дашборда">
+          <label class="scenario-control"
+            >АКТИВНЫЙ ПЛАН<select id="scenario"></select
+          ></label>
+          <div class="year-control">
+            <span class="control-label">ГОД / СТАТУС</span>
+            <div
+              class="year-switch"
+              role="group"
+              aria-label="Быстрый выбор года"
+            >
+              <button
+                type="button"
+                data-year="2026"
+                class="active"
+                aria-pressed="true"
+              >
+                2026 <small>факт</small></button
+              ><button type="button" data-year="2027" aria-pressed="false">
+                2027 <small>прогноз</small>
+              </button>
+            </div>
+          </div>
+          <label
+            >ПЕРИОД<select id="month">
+              <option value="all">Весь год · 2026</option>
+              <option value="h1">I полугодие</option>
+              <option value="h2">II полугодие</option>
+              <option value="q1">I квартал</option>
+              <option value="q2">II квартал</option>
+              <option value="q3">III квартал</option>
+              <option value="q4">IV квартал</option>
+            </select></label
+          >
+          <label>С<select id="fromMonth"></select></label>
+          <label>ПО<select id="toMonth"></select></label>
+          <label
+            >НАПРАВЛЕНИЕ<select id="family">
+              <option value="all">Весь ассортимент</option>
+              <option>Картон</option>
+              <option>Бумага</option>
+            </select></label
+          >
+          <div class="toolbar-note">
+            Единицы: т · млн ₽<br /><span id="period-status"
+              >Янв–сен факт · Окт–дек актуализация</span
+            >
+          </div>
+        </div>
+
+        <main id="main" tabindex="-1">
+          <div class="page-heading">
+            <div>
+              <div class="eyebrow">ОБЗОР ЦИКЛА ПЛАНИРОВАНИЯ</div>
+              <h1 id="title"></h1>
+              <p id="subtitle"></p>
+            </div>
+            <span class="status" id="validation"></span>
+          </div>
+          <div id="content" aria-live="polite"></div>
+        </main>
+        <footer>
+          <span>In.Plan · КАМА · Интегрированное планирование</span
+          ><span id="footer-period"
+            >Факт и актуализация: январь — декабрь 2026</span
+          >
+        </footer>
+      </div>
+    </div>
+
+    <dialog id="editor" aria-labelledby="editor-title">
+      <form id="editor-form">
+        <div class="editor-heading">
+          <div>
+            <div class="eyebrow">ПОЛЬЗОВАТЕЛЬСКАЯ КОПИЯ · ПРОГНОЗ 2027</div>
+            <h2 id="editor-title">Параметры сценария</h2>
+            <p>
+              Пять штатных версий останутся неизменными. Параметры пересчитают
+              спрос, кампании, раскрой, ресурсы, запасы и экономику.
+            </p>
+          </div>
+          <button
+            type="button"
+            id="cancel-x"
+            class="icon-button"
+            aria-label="Закрыть настройки"
+          >
+            ✕
+          </button>
+        </div>
+
+        <section
+          class="scenario-period"
+          aria-labelledby="scenario-period-title"
+        >
+          <div>
+            <h3 id="scenario-period-title">Период применения изменений</h3>
+            <p>
+              Факт 2026 года не изменяется. За пределами выбранного диапазона
+              действуют параметры копируемой версии.
+            </p>
+          </div>
+          <label>С<select id="scenario-from"></select></label
+          ><label>ПО<select id="scenario-to"></select></label>
+        </section>
+        <div id="editor-error" class="form-error" role="alert"></div>
+
+        <div class="scenario-blocks">
+          <fieldset class="scenario-block demand-block">
+            <legend>Спрос</legend>
+            <p class="block-note">
+              Рыночный объём, цена, сезонность и правило приоритета при дефиците
+              мощности.
+            </p>
+            <div class="parameter-grid">
+              <label
+                >Спрос к базе, %<input
+                  id="demand-input"
+                  data-param="demandScale"
+                  data-scale="100"
+                  type="number"
+                  min="75"
+                  max="125"
+                  step="1"
+                  value="100"
+                  required
+              /></label>
+              <label
+                >Рост 2027 к базе, %<input
+                  id="growth-input"
+                  data-param="forecastGrowth"
+                  data-scale="100"
+                  type="number"
+                  min="-10"
+                  max="20"
+                  step="1"
+                  value="0"
+                  required
+              /></label>
+              <label
+                >Сила сезонности, %<input
+                  id="seasonality-input"
+                  data-param="seasonality"
+                  data-scale="100"
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="5"
+                  value="100"
+                  required
+              /></label>
+              <label
+                >Цена реализации, %<input
+                  id="price-input"
+                  data-param="priceScale"
+                  data-scale="100"
+                  type="number"
+                  min="90"
+                  max="115"
+                  step="1"
+                  value="100"
+                  required
+              /></label>
+              <label class="wide-field"
+                >Приоритет планирования<select
+                  id="priority-input"
+                  data-param="priority"
+                >
+                  <option value="base">Продуктовый порядок</option>
+                  <option value="balanced">Сбалансированный</option>
+                  <option value="service">Сервис и Pharma</option>
+                  <option value="margin">Маржинальный доход</option>
+                </select></label
+              >
+            </div>
+          </fieldset>
+
+          <fieldset class="scenario-block production-block">
+            <legend>Основное производство</legend>
+            <p class="block-note">
+              Скорость машин, выход годного, переходы, минимальная кампания и
+              дополнительные ремонты.
+            </p>
+            <div class="parameter-grid">
+              <label
+                >Скорость КДМ-9, %<input
+                  id="kdm-rate-input"
+                  data-param="kdmRate"
+                  data-scale="100"
+                  type="number"
+                  min="80"
+                  max="115"
+                  step="1"
+                  value="100"
+                  required
+              /></label>
+              <label
+                >Скорость БДМ-7, %<input
+                  id="bdm-rate-input"
+                  data-param="bdmRate"
+                  data-scale="100"
+                  type="number"
+                  min="80"
+                  max="115"
+                  step="1"
+                  value="100"
+                  required
+              /></label>
+              <label
+                >Выход годного КДМ, %<input
+                  id="kdm-yield-input"
+                  data-param="kdmYield"
+                  data-scale="100"
+                  type="number"
+                  min="97"
+                  max="101"
+                  step="0.1"
+                  value="100"
+                  required
+              /></label>
+              <label
+                >Выход годного БДМ, %<input
+                  id="bdm-yield-input"
+                  data-param="bdmYield"
+                  data-scale="100"
+                  type="number"
+                  min="97"
+                  max="101"
+                  step="0.1"
+                  value="100"
+                  required
+              /></label>
+              <label
+                >Время переходов, %<input
+                  id="setup-input"
+                  data-param="setupScale"
+                  data-scale="100"
+                  type="number"
+                  min="50"
+                  max="130"
+                  step="1"
+                  value="100"
+                  required
+              /></label>
+              <label
+                >Порог запуска кампании, т<input
+                  id="min-campaign-input"
+                  data-param="minCampaign"
+                  type="number"
+                  min="2"
+                  max="80"
+                  step="1"
+                  value="8"
+                  required
+              /></label>
+              <label
+                >Доп. ремонт КДМ, ч<input
+                  id="repair-input"
+                  data-param="extra"
+                  type="number"
+                  min="0"
+                  max="240"
+                  step="1"
+                  value="0"
+                  required
+              /></label>
+              <label
+                >Месяц ремонта КДМ<select
+                  id="repair-month-input"
+                  data-param="repairMonth"
+                ></select
+              ></label>
+              <label
+                >Доп. ремонт БДМ, ч<input
+                  id="bdm-repair-input"
+                  data-param="extraBdm"
+                  type="number"
+                  min="0"
+                  max="240"
+                  step="1"
+                  value="0"
+                  required
+              /></label>
+              <label
+                >Месяц ремонта БДМ<select
+                  id="bdm-repair-month-input"
+                  data-param="repairMonthBdm"
+                ></select
+              ></label>
+            </div>
+          </fieldset>
+
+          <fieldset class="scenario-block raw-block">
+            <legend>Сырьё</legend>
+            <p class="block-note">
+              Цена и доступность волокна и мелования; удельный расход влияет и
+              на ограничение выпуска, и на себестоимость.
+            </p>
+            <div class="parameter-grid">
+              <label
+                >Индекс цены волокна, %<input
+                  id="cost-input"
+                  data-param="cost"
+                  data-scale="100"
+                  type="number"
+                  min="80"
+                  max="150"
+                  step="1"
+                  value="100"
+                  required
+              /></label>
+              <label
+                >Индекс цены мелования, %<input
+                  id="coat-cost-input"
+                  data-param="coatCost"
+                  data-scale="100"
+                  type="number"
+                  min="80"
+                  max="150"
+                  step="1"
+                  value="100"
+                  required
+              /></label>
+              <label
+                >Поставка волокна, %<input
+                  id="fiber-supply-input"
+                  data-param="fiberSupply"
+                  data-scale="100"
+                  type="number"
+                  min="75"
+                  max="110"
+                  step="1"
+                  value="100"
+                  required
+              /></label>
+              <label
+                >Поставка мелования, %<input
+                  id="coat-supply-input"
+                  data-param="coatSupply"
+                  data-scale="100"
+                  type="number"
+                  min="75"
+                  max="110"
+                  step="1"
+                  value="100"
+                  required
+              /></label>
+              <label
+                >Расход волокна, %<input
+                  id="fiber-intensity-input"
+                  data-param="fiberIntensity"
+                  data-scale="100"
+                  type="number"
+                  min="90"
+                  max="110"
+                  step="1"
+                  value="100"
+                  required
+              /></label>
+              <label
+                >Расход мелования, %<input
+                  id="coat-intensity-input"
+                  data-param="coatIntensity"
+                  data-scale="100"
+                  type="number"
+                  min="90"
+                  max="110"
+                  step="1"
+                  value="100"
+                  required
+              /></label>
+            </div>
+          </fieldset>
+
+          <fieldset class="scenario-block utilities-block">
+            <legend>Обеспечивающие цеха</legend>
+            <p class="block-note">
+              Энергоцех и водооборот: лимиты ограничивают брутто-выпуск, тарифы
+              и расход — переменную себестоимость.
+            </p>
+            <div class="parameter-grid">
+              <label
+                >Лимит электроэнергии, %<input
+                  id="energy-supply-input"
+                  data-param="energySupply"
+                  data-scale="100"
+                  type="number"
+                  min="75"
+                  max="110"
+                  step="1"
+                  value="100"
+                  required
+              /></label>
+              <label
+                >Энергоёмкость, %<input
+                  id="energy-intensity-input"
+                  data-param="energyIntensity"
+                  data-scale="100"
+                  type="number"
+                  min="80"
+                  max="120"
+                  step="1"
+                  value="100"
+                  required
+              /></label>
+              <label
+                >Тариф энергии, %<input
+                  id="energy-tariff-input"
+                  data-param="energyTariff"
+                  data-scale="100"
+                  type="number"
+                  min="80"
+                  max="140"
+                  step="1"
+                  value="100"
+                  required
+              /></label>
+              <label
+                >Лимит оборотной воды, %<input
+                  id="water-supply-input"
+                  data-param="waterSupply"
+                  data-scale="100"
+                  type="number"
+                  min="75"
+                  max="110"
+                  step="1"
+                  value="100"
+                  required
+              /></label>
+              <label
+                >Водоёмкость, %<input
+                  id="water-intensity-input"
+                  data-param="waterIntensity"
+                  data-scale="100"
+                  type="number"
+                  min="80"
+                  max="120"
+                  step="1"
+                  value="100"
+                  required
+              /></label>
+              <label
+                >Тариф воды и ЦОС, %<input
+                  id="water-tariff-input"
+                  data-param="waterTariff"
+                  data-scale="100"
+                  type="number"
+                  min="80"
+                  max="140"
+                  step="1"
+                  value="100"
+                  required
+              /></label>
+            </div>
+          </fieldset>
+
+          <fieldset class="scenario-block logistics-block">
+            <legend>Логистика</legend>
+            <p class="block-note">
+              Страховой запас, ёмкость складов и тарифы. Пополнение РЦ
+              выполняется только при наличии свободного места и запаса завода.
+            </p>
+            <div class="parameter-grid">
+              <label
+                >Целевой запас, % спроса<input
+                  id="target-input"
+                  data-param="target"
+                  data-scale="100"
+                  type="number"
+                  min="5"
+                  max="45"
+                  step="1"
+                  value="30"
+                  required
+              /></label>
+              <label
+                >Ёмкость РЦ, %<input
+                  id="storage-cap-input"
+                  data-param="storageCap"
+                  data-scale="100"
+                  type="number"
+                  min="90"
+                  max="120"
+                  step="1"
+                  value="100"
+                  required
+              /></label>
+              <label
+                >Тариф завод → РЦ, %<input
+                  id="freight-input"
+                  data-param="freightCost"
+                  data-scale="100"
+                  type="number"
+                  min="70"
+                  max="140"
+                  step="1"
+                  value="100"
+                  required
+              /></label>
+              <label
+                >Последняя миля, %<input
+                  id="lastmile-input"
+                  data-param="lastMileCost"
+                  data-scale="100"
+                  type="number"
+                  min="70"
+                  max="140"
+                  step="1"
+                  value="100"
+                  required
+              /></label>
+              <label
+                >Стоимость хранения, %<input
+                  id="holding-input"
+                  data-param="holdingCost"
+                  data-scale="100"
+                  type="number"
+                  min="70"
+                  max="140"
+                  step="1"
+                  value="100"
+                  required
+              /></label>
+            </div>
+          </fieldset>
+        </div>
+
+        <div class="dialog-actions">
+          <button type="button" id="editor-reset" class="button">
+            Сбросить изменения</button
+          ><span class="dialog-spacer"></span
+          ><button type="button" id="cancel" class="button">Отмена</button
+          ><button type="submit" class="button primary">
+            Создать и пересчитать
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <div id="toast" role="status"></div>
+  </body>
+</html>

@@ -802,7 +802,7 @@ if (require.main === module) {
   const PORT = Number(process.env.PORT) || 8080;
   const HOST = process.env.HOST || '0.0.0.0';
   createApp().listen(PORT, HOST, () => {
-    console.log(`КАМА · Планирование 2026 → http://${HOST}:${PORT}`);
+    console.log(`КАМА · Планирование 2026–2027 → http://${HOST}:${PORT}`);
     console.log('Основной дашборд работает без подключений к базам данных.');
     console.log('Исторические API коннекторов сохранены для совместимости и не вызываются новым интерфейсом.');
   });
