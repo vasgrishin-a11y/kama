@@ -62,6 +62,7 @@
     toMonth = 11,
     flowMode = "volume",
     revenueMetric = "revenue",
+    overviewSource = "previous",
     stockMode = "volume",
     obsoleteMode = "value",
     cutMachine = "all",
@@ -563,23 +564,37 @@
       : `${M.months[first]}–${M.months[last].toLowerCase()} ${labelYear}`;
   }
 
-  function overview(r, t) {
-    const previous = results.get(M.previousSopId);
+  /* Overview forecast source: the previous S&OP cycle (default on every load)
+     or the active plan. Reported actual (Jan–Sep 2026) is the same in both;
+     months outside the previous cycle's horizon stay empty in its view. */
+  function overview(r) {
+    const usePrevious = overviewSource === "previous";
+    const previousResult = results.get(M.previousSopId);
+    const source = usePrevious ? previousResult : r;
     const bp = businessResults.get(year);
-    const bpTotals = totals(bp);
     const inFamily = (row) => family === "all" || row.family === family;
     const isActual = (m) => year === 2026 && m <= 8;
+    const covered = (m) => !usePrevious || isActual(m) || M.previousSopCovers(year, m);
     const periodMonths = M.months.map((_, m) => m).filter((m) => m >= fromMonth && m <= toMonth);
     const factMonths = periodMonths.filter(isActual);
-    const forecastMonths = periodMonths.filter((m) => !isActual(m));
-    const pick = (source, list) => {
+    const shownMonths = periodMonths.filter(covered);
+    const forecastMonths = shownMonths.filter((m) => !isActual(m));
+    const pick = (data, list) => {
       const set = new Set(list);
-      return source.rows.filter((row) => set.has(row.month) && inFamily(row));
+      return data.rows.filter((row) => set.has(row.month) && inFamily(row));
     };
-    const fact = metricSum(pick(previous, factMonths)), bpFact = metricSum(pick(bp, factMonths));
-    const landing = metricSum(pick(previous, periodMonths)), bpLanding = metricSum(pick(bp, periodMonths));
-    const factLabel = rangeLabel(factMonths), periodLabel = rangeLabel(periodMonths);
+    const fact = metricSum(pick(source, factMonths)), bpFact = metricSum(pick(bp, factMonths));
+    const landing = metricSum(pick(source, shownMonths)), bpLanding = metricSum(pick(bp, shownMonths));
+    const factLabel = rangeLabel(factMonths), periodLabel = rangeLabel(periodMonths), shownLabel = rangeLabel(shownMonths);
     const landingName = !factMonths.length ? "прогноз" : !forecastMonths.length ? "факт" : "факт + прогноз";
+    const previousName = previousResult.config.name;
+    const sourceTag = usePrevious ? "прошлый цикл S&OP" : r.config.name.split(" · ")[0];
+    const noForecast = "Нет прогноза прошлого цикла S&OP";
+    const horizon = M.previousSop;
+    const horizonLabel = `${M.months[horizon.from.month].toLowerCase()} ${horizon.from.year} – ${M.months[horizon.to.month].toLowerCase()} ${horizon.to.year}`;
+    const toggle = `<div class="overview-source-bar"><span class="control-label">ПРОГНОЗ В ОБЗОРЕ</span><div class="overview-source" role="group" aria-label="Прогноз в обзоре плана">
+      <button type="button" data-overview-source="previous" aria-pressed="${usePrevious}" title="${esc(`Цикл S&OP «${horizon.cycle}» · ${previousName} · горизонт ${horizonLabel}`)}">Прошлый цикл S&amp;OP<small>${esc(previousName.split(" · ")[0])} · ${horizonLabel}</small></button><button type="button" data-overview-source="active" aria-pressed="${!usePrevious}" title="${esc(r.config.name)}">Активный сценарий<small>${esc(r.config.name)}</small></button>
+    </div></div>`;
     const metrics = [
       ["Выручка", "revenue", money, "млн ₽"],
       ["МД", "margin", money, "млн ₽"],
@@ -591,50 +606,61 @@
         : kpi(`${label} · факт`, "—", "", `Нет закрытых месяцев в периоде ${periodLabel}`, "muted-card"),
     ).join("");
     const landingCards = metrics.map(([label, key, formatter, unit]) =>
-      kpi(`${label} · ${landingName} ${periodLabel}`, formatter(landing[key]), unit, `БП ${formatter(bpLanding[key])} · ${comparisonFoot(landing[key], bpLanding[key], formatter, unit)}`, "landing"),
+      shownMonths.length
+        ? kpi(`${label} · ${landingName} ${shownLabel}`, formatter(landing[key]), unit, `БП ${formatter(bpLanding[key])} · ${comparisonFoot(landing[key], bpLanding[key], formatter, unit)}`, "landing")
+        : kpi(`${label} · прогноз ${periodLabel}`, "—", "", noForecast, "muted-card"),
     ).join("");
-    const monthlyOf = (source, key, scale = 1, filter = () => true) =>
-      M.months.map((_, m) => (filter(m) ? S(source.rows.filter((row) => row.month === m && inFamily(row)), key) / scale : null));
+    const monthlyOf = (data, key, scale = 1, filter = () => true) =>
+      M.months.map((_, m) => (filter(m) ? S(data.rows.filter((row) => row.month === m && inFamily(row)), key) / scale : null));
     const bpMonthly = (key, scale = 1) => monthlyOf(bp, key, scale);
-    const actualMonthly = (key, scale = 1) => monthlyOf(previous, key, scale, isActual);
-    const forecastMonthly = (key, scale = 1) => monthlyOf(previous, key, scale, (m) => !isActual(m));
-    const landingMonthly = (key, scale = 1) => monthlyOf(previous, key, scale);
+    const actualMonthly = (key, scale = 1) => monthlyOf(source, key, scale, isActual);
+    const forecastMonthly = (key, scale = 1) => monthlyOf(source, key, scale, (m) => !isActual(m) && covered(m));
+    const landingMonthly = (key, scale = 1) => monthlyOf(source, key, scale, covered);
+    const delta = (value, base, formatter) =>
+      `<span class="${value >= base ? "delta-pos" : "delta-neg"}">${signed(value - base, 1, formatter)}</span>`;
     const rowsTable = periodMonths.map((m) => {
-      const current = metricSum(pick(previous, [m])), plan = metricSum(pick(bp, [m]));
-      const delta = (value, base, formatter) =>
-        `<span class="${value >= base ? "delta-pos" : "delta-neg"}">${value - base >= 0 ? "+" : ""}${formatter(value - base)}</span>`;
+      const plan = metricSum(pick(bp, [m]));
+      const label = `${M.months[m]} ${year}`;
+      if (!covered(m))
+        return [label, `<span class="muted">${noForecast}</span>`, fmt(plan.sales), "—", "—", money(plan.revenue), "—", "—", money(plan.margin), "—", "—"];
+      const current = metricSum(pick(source, [m]));
       return [
-        `${M.months[m]} ${year}`, isActual(m) ? "Факт" : "Прогноз S&OP",
+        label, isActual(m) ? "Факт" : `Прогноз · ${esc(sourceTag)}`,
         fmt(plan.sales), fmt(current.sales), delta(current.sales, plan.sales, fmt),
         money(plan.revenue), money(current.revenue), delta(current.revenue, plan.revenue, money),
         money(plan.margin), money(current.margin), delta(current.margin, plan.margin, money),
       ];
     });
-    return `<div class="kpis overview-kpis">${factCards}${landingCards}</div>
+    const context = `БП · факт · ${usePrevious ? sourceTag : `сценарий ${esc(sourceTag)}`}`;
+    const directionSub = `${esc(usePrevious ? `Прошлый цикл S&OP (${previousName.split(" · ")[0]})` : r.config.name)} против бизнес-плана · ${shownMonths.length ? shownLabel : periodLabel}`;
+    const directionBody = shownMonths.length
+      ? revenueDirectionChart(pick(source, shownMonths), pick(bp, shownMonths))
+      : `<div class="overview-empty">${noForecast} за ${periodLabel}</div>`;
+    return `${toggle}<div class="kpis overview-kpis">${factCards}${landingCards}</div>
     <div class="grid equal chart-grid">
       ${panel("Объём: бизнес-план, факт и прогноз", "т", chart("План-факт отгрузок", [
         { name: "Бизнес-план", values: bpMonthly("sales"), color: "#b8c0cc" },
         { name: "Факт", values: actualMonthly("sales"), color: "#4769ff" },
         { name: "Прогноз S&OP", values: forecastMonthly("sales"), color: "#8b5cf6", line: true, dashed: false },
-      ], "т", { compare: true, context: "БП · факт · прогноз" }))}
+      ], "т", { compare: true, context }))}
       ${panel("Выручка: закрытие года против бизнес-плана", "млн ₽", chart("Выручка против бизнес-плана", [
         { name: "Бизнес-план", values: bpMonthly("revenue", 1e6), color: "#b8c0cc" },
         { name: "Факт", values: actualMonthly("revenue", 1e6), color: "#4769ff" },
         { name: "Ожидаемое закрытие", values: landingMonthly("revenue", 1e6), color: "#19a27b", line: true, dashed: false },
-      ], "млн ₽", { compare: true, context: "БП · факт · закрытие" }))}
+      ], "млн ₽", { compare: true, context }))}
     </div>
-    ${panel("Выручка по направлениям", "Текущий план против бизнес-плана", revenueDirectionChart(t.rows, bpTotals.rows), "revenue-panel")}
+    ${panel("Выручка по направлениям", directionSub, directionBody, "revenue-panel")}
     <div class="grid equal chart-grid">
       ${panel("Маржинальный доход: план-факт", "млн ₽", chart("МД против бизнес-плана", [
         { name: "Бизнес-план", values: bpMonthly("margin", 1e6), color: "#b8c0cc" },
         { name: "Факт / прогноз S&OP", values: landingMonthly("margin", 1e6), color: "#19a27b", line: true, dashed: false },
-      ], "млн ₽", { compare: true, context: "БП · факт · прогноз" }))}
+      ], "млн ₽", { compare: true, context }))}
       ${panel("Производство и запас против бизнес-плана", "т", chart("Производство и запас против БП", [
         { name: "Выпуск · БП", values: bpMonthly("production"), color: "#c4ccd7" },
         { name: "Выпуск · факт / прогноз", values: landingMonthly("production"), color: "#8b5cf6" },
         { name: "Запас · БП", values: bpMonthly("end"), color: "#ed0084", line: true },
         { name: "Запас · факт / прогноз", values: landingMonthly("end"), color: "#4769ff", line: true, dashed: false },
-      ], "т", { compare: true, context: "БП · факт · прогноз" }))}
+      ], "т", { compare: true, context }))}
     </div>
     ${panel("План-факт по месяцам", "Δ = факт / прогноз − бизнес-план", table(["Месяц", "Статус", "Отгрузки БП, т", "Факт / прогноз, т", "Δ, т", "Выручка БП, млн ₽", "Факт / прогноз, млн ₽", "Δ выручки", "МД БП, млн ₽", "МД факт / прогноз", "Δ МД"], rowsTable))}`;
   }
@@ -2130,6 +2156,11 @@
   }
 
   function wireContent() {
+    document.querySelectorAll("[data-overview-source]").forEach((btn) => (btn.onclick = () => {
+      overviewSource = btn.dataset.overviewSource === "active" ? "active" : "previous";
+      render();
+      document.querySelector(`[data-overview-source="${overviewSource}"]`)?.focus();
+    }));
     document.querySelectorAll("[data-revenue-metric]").forEach((btn) => (btn.onclick = () => {
       revenueMetric = btn.dataset.revenueMetric;
       render();

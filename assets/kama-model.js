@@ -295,7 +295,26 @@
     demandScale: 1.04,
     priceScale: 1.02,
   };
-  const previousSopId = "balanced";
+  /* Previous S&OP cycle (September 2026): the approved V5 plan. It used the
+     same rolling 15-month horizon as the current October cycle (October 2026 –
+     December 2027), one month earlier: September 2026 – November 2027.
+     September is now reported actual; December 2027 is outside its horizon,
+     so the previous cycle has no forecast for that month. */
+  const previousSop = {
+    id: "balanced",
+    cycle: "Сентябрь 2026",
+    from: { year: 2026, month: 8 },
+    to: { year: 2027, month: 10 },
+  };
+  const previousSopId = previousSop.id;
+  const horizonIndex = (year, month) => year * 12 + month;
+  function previousSopCovers(year, month) {
+    const index = horizonIndex(year, month);
+    return (
+      index >= horizonIndex(previousSop.from.year, previousSop.from.month) &&
+      index <= horizonIndex(previousSop.to.year, previousSop.to.month)
+    );
+  }
 
   /* Lag-1 monthly demand forecast used to plan production in the reported
      months (Jan–Sep 2026). Values are the forecast error in % of the actual
@@ -1230,7 +1249,9 @@
     segments,
     scenarios,
     businessPlan,
+    previousSop,
     previousSopId,
+    previousSopCovers,
     forecastErrorTable,
     forecastAccuracyTarget,
     forecastError,

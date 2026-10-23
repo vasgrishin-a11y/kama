@@ -2736,3 +2736,14 @@ body.has-expanded-panel::before {
 .obsolete-panel th:nth-child(2), .obsolete-panel th:nth-child(3), .obsolete-panel th:nth-child(10), .obsolete-panel th:nth-child(11) { text-align: left; }
 .obsolete-panel td:nth-child(10), .obsolete-panel td:nth-child(11) { white-space: normal; min-width: 150px; max-width: 220px; line-height: 1.4; }
 .obsolete-panel td:nth-child(3) { white-space: normal; max-width: 150px; }
+
+/* Overview forecast source: previous S&OP cycle / active scenario */
+.overview-source-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 14px; }
+.overview-source { display: inline-flex; max-width: 100%; border: 1px solid #dce4ea; border-radius: 8px; overflow: hidden; background: #fff; }
+.overview-source button { min-width: 0; max-width: 360px; border: 0; border-right: 1px solid #dce4ea; background: #fff; color: #52617a; padding: 8px 14px; font: inherit; font-size: 12px; font-weight: 700; line-height: 1.15; text-align: left; cursor: pointer; }
+.overview-source button:last-child { border-right: 0; }
+.overview-source button small { display: block; margin-top: 3px; font-size: 10px; font-weight: 500; color: #7b8799; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.overview-source button[aria-pressed="true"] { background: #4769ff; color: #fff; }
+.overview-source button[aria-pressed="true"] small { color: #e5eaff; }
+.overview-source button:focus-visible { outline: 2px solid #04143a; outline-offset: -3px; }
+.overview-empty { display: grid; place-items: center; min-height: 180px; padding: 16px; border: 1px dashed #dce4ea; border-radius: 10px; background: #fafbfd; color: var(--muted); font-size: 12px; text-align: center; }
