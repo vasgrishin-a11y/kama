@@ -16,10 +16,10 @@
     { id: "him-complect", name: "ХимКомплект", resource: "coat", resourceName: "Компоненты мелования", share: 0.2, price: 53600, freight: 1650, lead: 5 },
   ];
   const resourceMeta = {
-    fiber: { name: "Волокнистое сырьё", unit: "т абс. сух.", scale: 1, tariff: 35000, color: "#4769ff", target: 0.9 },
-    coat: { name: "Компоненты мелования", unit: "т", scale: 1, tariff: 51000, color: "#19a27b", target: 0.88 },
-    energy: { name: "Электроэнергия", unit: "МВт·ч", scale: 1, tariff: 5400, color: "#ff8c00", target: 0.88 },
-    water: { name: "Оборотная вода", unit: "м³", scale: 1, tariff: 42, color: "#38a3c7", target: 0.84 },
+    fiber: { name: "Волокнистое сырьё", unit: "т абс. сух.", scale: 1, tariff: 35000, color: "#4769ff" },
+    coat: { name: "Компоненты мелования", unit: "т", scale: 1, tariff: 51000, color: "#19a27b" },
+    energy: { name: "Электроэнергия", unit: "МВт·ч", scale: 1, tariff: 5400, color: "#ff8c00" },
+    water: { name: "Оборотная вода", unit: "м³", scale: 1, tariff: 42, color: "#38a3c7" },
   };
 
   function movementData(M, r, customers) {
@@ -166,7 +166,137 @@
     };
   }
 
-  const api = { suppliers, resourceMeta, movementData, sum };
+  /* Forecast accuracy = 1 − WAPE at product × month level for reported months
+     only (rows with dataType "actual"); bias = (Σ forecast − Σ actual) / Σ actual. */
+  function forecastAccuracy(rows, target = 0.9) {
+    const groups = new Map();
+    for (const row of rows) {
+      if (row.dataType !== "actual" || !Number.isFinite(row.forecast)) continue;
+      const key = `${row.product}|${row.month}`;
+      const item = groups.get(key) || { product: row.product, month: row.month, actual: 0, forecast: 0 };
+      item.actual += row.demand;
+      item.forecast += row.forecast;
+      groups.set(key, item);
+    }
+    const items = [...groups.values()];
+    const actual = sum(items, "actual");
+    const forecast = sum(items, "forecast");
+    const absError = sum(items, (item) => Math.abs(item.forecast - item.actual));
+    const months = [...new Set(items.map((item) => item.month))].sort((a, b) => a - b);
+    const products = [...new Set(items.map((item) => item.product))].map((product) => {
+      const own = items.filter((item) => item.product === product);
+      const a = sum(own, "actual");
+      return {
+        product,
+        accuracy: a ? 1 - sum(own, (item) => Math.abs(item.forecast - item.actual)) / a : null,
+        bias: a ? (sum(own, "forecast") - a) / a : null,
+      };
+    });
+    return {
+      accuracy: actual ? 1 - absError / actual : null,
+      bias: actual ? (forecast - actual) / actual : null,
+      target,
+      months,
+      actual,
+      forecast,
+      products,
+    };
+  }
+
+  /* Days of stock on hand at month end vs the target level, product × month. */
+  function stockTurnover(M, r, family = "all") {
+    const days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    return M.products
+      .filter((p) => family === "all" || p.family === family)
+      .map((p) => {
+        const cells = M.months.map((_, m) => {
+          const rows = r.rows.filter((x) => x.product === p.id && x.month === m);
+          const end = sum(rows, "end"), sales = sum(rows, "sales");
+          const demand = sum(rows, "demand"), target = sum(rows, "target");
+          const doh = sales > 1e-9 ? end / (sales / days[m]) : end > 1e-9 ? Infinity : 0;
+          const targetDays = demand > 1e-9 ? target / (demand / days[m]) : 0;
+          return {
+            month: m,
+            end,
+            sales,
+            target,
+            doh,
+            targetDays,
+            ratio: targetDays > 0 ? doh / targetDays : 0,
+            dataType: rows[0]?.dataType || "plan",
+          };
+        });
+        return { product: p, cells };
+      });
+  }
+
+  /* Slow-moving and obsolete lots in the warehouses on 23.10.2026. They are
+     off-grade, customer-specific or aged rolls that the S&OP sales plan does not
+     consume. The storage limit is 12 months from production; the planned
+     liquidation (discount channel) reduces the quantity until that month. */
+  const obsoleteAsOf = "2026-10";
+  const obsoleteLots = [
+    { id: "НЛ-01", sku: "bulk-70-1050", node: "siberia", qty: 118, produced: "2025-10", reason: "Формат снят клиентом", sellRate: 0, action: "Возврат в массоподготовку" },
+    { id: "НЛ-02", sku: "bright-220-1000", node: "south", qty: 96, produced: "2025-11", reason: "Отменённый заказ с индивидуальной спецификацией", sellRate: 8, action: "Уценка и продажа дистрибьютору" },
+    { id: "НЛ-03", sku: "sc-56-1050", node: "siberia", qty: 182, produced: "2025-12", reason: "Падение спроса на SC", sellRate: 6, action: "Перемещение на завод и переработка" },
+    { id: "НЛ-04", sku: "strong-300-700", node: "ural", qty: 74, produced: "2025-12", reason: "Пересорт: отклонение по белизне", sellRate: 4, action: "Уценка (2-й сорт)" },
+    { id: "НЛ-05", sku: "lwc-60-840", node: "north", qty: 122, produced: "2026-01", reason: "Повреждение упаковки, влажность", sellRate: 10, action: "Переупаковка и продажа со скидкой" },
+    { id: "НЛ-06", sku: "tobacco2-230-900", node: "volga", qty: 138, produced: "2026-02", reason: "Клиент сменил дизайн пачки", sellRate: 0, action: "Поиск покупателя / списание" },
+    { id: "НЛ-07", sku: "offset-65-630", node: "plant", qty: 264, produced: "2026-03", reason: "Перепроизводство при завышенном прогнозе", sellRate: 22, action: "Приоритет в отгрузках, скидка 8%" },
+    { id: "НЛ-08", sku: "medical-45-630", node: "plant", qty: 58, produced: "2026-03", reason: "Остаток после смены рецептуры", sellRate: 3, action: "Возврат в массоподготовку" },
+    { id: "НЛ-09", sku: "pharma-300-700", node: "center", qty: 42, produced: "2026-04", reason: "Отменённый заказ", sellRate: 2, action: "Предложить ключевым клиентам" },
+    { id: "НЛ-10", sku: "satin-80-630", node: "plant", qty: 86, produced: "2026-06", reason: "Пересорт по глянцу", sellRate: 5, action: "Уценка (2-й сорт)" },
+  ];
+  const monthIndex = (key) => {
+    const [y, m] = key.split("-").map(Number);
+    return (y - 2026) * 12 + (m - 1);
+  };
+  function obsoleteStock(M, actual, options = {}) {
+    const limit = options.limitMonths || 12, windowMonths = options.windowMonths || 6;
+    const asOf = monthIndex(obsoleteAsOf);
+    const lots = obsoleteLots.map((lot) => {
+      const s = M.skus.find((x) => x.id === lot.sku);
+      const p = M.products.find((x) => x.id === s.product);
+      /* Book value at production cost (absorption costing) of the latest reported month. */
+      const rows = actual.rows.filter((x) => x.sku === lot.sku && x.month <= 8 && x.sales > 0);
+      const last = rows[rows.length - 1];
+      const unitValue = last ? last.costOfSales / last.sales : p.cost * 1.18;
+      const riskMonth = monthIndex(lot.produced) + limit;
+      const monthsLeft = Math.max(0, riskMonth - asOf);
+      const atRisk = Math.max(0, lot.qty - lot.sellRate * monthsLeft);
+      return {
+        ...lot,
+        product: p.id,
+        productName: p.name,
+        family: p.family,
+        gram: s.gram,
+        width: s.width,
+        node: lot.node,
+        age: asOf - monthIndex(lot.produced),
+        riskMonth,
+        monthsLeft,
+        overdue: riskMonth <= asOf,
+        inWindow: riskMonth < asOf + windowMonths,
+        atRisk,
+        unitValue,
+        bookValue: lot.qty * unitValue,
+        valueAtRisk: atRisk * unitValue,
+      };
+    });
+    const months = Array.from({ length: windowMonths }, (_, i) => asOf + i);
+    return { asOf, months, lots, windowMonths, limit };
+  }
+
+  const api = {
+    suppliers,
+    resourceMeta,
+    movementData,
+    forecastAccuracy,
+    stockTurnover,
+    obsoleteLots,
+    obsoleteStock,
+    sum,
+  };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.KamaAnalytics = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

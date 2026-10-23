@@ -295,7 +295,52 @@
     demandScale: 1.04,
     priceScale: 1.02,
   };
-  const previousSopId = "balanced";
+  /* Previous S&OP cycle (September 2026): the approved V5 plan. It used the
+     same rolling 15-month horizon as the current October cycle (October 2026 –
+     December 2027), one month earlier: September 2026 – November 2027.
+     September is now reported actual; December 2027 is outside its horizon,
+     so the previous cycle has no forecast for that month. */
+  const previousSop = {
+    id: "balanced",
+    cycle: "Сентябрь 2026",
+    from: { year: 2026, month: 8 },
+    to: { year: 2027, month: 10 },
+  };
+  const previousSopId = previousSop.id;
+  const horizonIndex = (year, month) => year * 12 + month;
+  function previousSopCovers(year, month) {
+    const index = horizonIndex(year, month);
+    return (
+      index >= horizonIndex(previousSop.from.year, previousSop.from.month) &&
+      index <= horizonIndex(previousSop.to.year, previousSop.to.month)
+    );
+  }
+
+  /* Lag-1 monthly demand forecast used to plan production in the reported
+     months (Jan–Sep 2026). Values are the forecast error in % of the actual
+     unconstrained demand: forecast = actual × (1 + error). Publishing papers
+     (offset, bulk, SC) carry a systematic over-forecast — the market decline
+     was not in the forecast — which leaves stock above the target level.
+     Plans from October 2026 and the business plan use demand directly. */
+  const forecastErrorTable = {
+    bright: [5, -6, 8, -4, 9, -5, 6, -8, 4],
+    strong: [-5, 7, 16, -6, 5, -9, 4, 10, -5],
+    project: [8, -7, 6, 11, -9, 5, -6, 12, 7],
+    pharma: [3, -2, 4, -3, 3, 2, -4, 3, -3],
+    tobacco1: [-9, 11, -7, 8, -10, 12, -8, 9, -11],
+    tobacco2: [10, -12, 8, -9, 11, -8, 14, 21, -10],
+    lwc: [-8, 10, -7, 9, -11, 8, -6, 12, -9],
+    satin: [9, -8, 11, -10, 7, -9, 13, -8, 10],
+    medical: [-4, 5, -3, 4, -5, 3, -4, 5, -3],
+    offset: [11, 14, 8, 17, 10, 20, 12, 16, 18],
+    bulk: [8, 12, -6, 14, 11, 9, 18, 13, 15],
+    sc: [14, 10, 17, 12, 22, 16, 20, 24, 19],
+  };
+  const forecastAccuracyTarget = 0.9;
+  function forecastError(productId, absoluteMonth) {
+    if (absoluteMonth < 0 || absoluteMonth > 8) return 0;
+    return (forecastErrorTable[productId]?.[absoluteMonth] || 0) / 100;
+  }
 
   const sum = (a, k) =>
     a.reduce(
@@ -383,6 +428,13 @@
         param("seasonality", 1, m),
       );
     };
+    /* Only the shared reported run (Jan–Sep 2026) plans production on the
+       lag-1 forecast; sales are always limited by the realised demand. */
+    const withForecastErrors = Boolean(cfg.forecastErrors) && year === 2026;
+    const planDemand = (s, m) => {
+      const d = demandFor(s, m);
+      return withForecastErrors ? d * (1 + forecastError(s.product, m)) : d;
+    };
 
     const rows = [],
       campaigns = [],
@@ -469,7 +521,7 @@
               (s) => s.product === p.id && s.gram === gram,
             );
             const need = ss.map((s) => {
-              const d = demandFor(s, m);
+              const d = planDemand(s, m);
               const target =
                 param("target", 0.2, m) +
                 (priority === "balanced" &&
@@ -481,7 +533,7 @@
                 0,
                 d * pass +
                   (pass === 1
-                    ? demandFor(s, Math.min(11, m + 1)) * target
+                    ? planDemand(s, Math.min(11, m + 1)) * target
                     : 0) -
                   sum(stock[s.id], (x) => x) -
                   made[s.id],
@@ -634,12 +686,21 @@
           load: elapsed / hours,
         });
       }
+      /* Purchase-price index of each resource in this month: the same levers
+         that drive the unit cost of sales (stress / custom price indices). */
+      const priceIndex = {
+        fiber: param("cost", 1, m),
+        coat: param("coatCost", 1, m, "cost"),
+        energy: param("energyTariff", 1, m),
+        water: param("waterTariff", 1, m),
+      };
       resources.push(
         ...["fiber", "coat", "energy"].map((id) => ({
           month: m,
           id,
           available: available[id],
           used: used[id],
+          priceIndex: priceIndex[id],
         })),
       );
       utilities.push({
@@ -647,6 +708,7 @@
         id: "water",
         available: available.water,
         used: used.water,
+        priceIndex: priceIndex.water,
       });
       for (const s of skus) {
         const p = products.find((p) => p.id === s.product),
@@ -712,12 +774,22 @@
         };
         const fixedCost = sum(Object.values(fixedParts), (x) => x);
         const fullCost = variable + logistics + holding + fixedCost;
+        /* Russian P&L view (form 2): cost of sales = variable production cost
+           + fixed production cost (labour, maintenance, depreciation).
+           Gross profit − commercial (logistics, storage, selling)
+           − administrative expenses = operating profit. */
+        const costOfSales =
+          variable +
+          fixedParts.labor +
+          fixedParts.maintenance +
+          fixedParts.depreciation;
         rows.push({
           month: m,
           sku: s.id,
           product: p.id,
           family: p.family,
           demand: d,
+          forecast: planDemand(s, m),
           production: made[s.id],
           sales: shipped,
           gap: d - shipped,
@@ -741,6 +813,9 @@
           sellingCost: fixedParts.selling,
           fixedCost,
           fullCost,
+          costOfSales,
+          grossProfit: revenue - costOfSales,
+          commercialCost: logistics + holding + fixedParts.selling,
           operatingProfit: revenue - fullCost,
           logistics,
           holding,
@@ -810,6 +885,7 @@
       variable: sum(rows, "variable"),
       fixedCost: sum(rows, "fixedCost"),
       fullCost: sum(rows, "fullCost"),
+      grossProfit: sum(rows, "grossProfit"),
       operatingProfit: sum(rows, "operatingProfit"),
       logistics: sum(rows, "logistics"),
       holding: sum(rows, "holding"),
@@ -849,6 +925,7 @@
       variable: sum(rows, "variable"),
       fixedCost: sum(rows, "fixedCost"),
       fullCost: sum(rows, "fullCost"),
+      grossProfit: sum(rows, "grossProfit"),
       operatingProfit: sum(rows, "operatingProfit"),
       logistics: sum(rows, "logistics"),
       holding: sum(rows, "holding"),
@@ -883,7 +960,7 @@
     if (!actual2026Cache) {
       actual2026Cache = run(
         scenarios.find((c) => c.id === previousSopId),
-        { year: 2026 },
+        { year: 2026, forecastErrors: true },
       );
     }
     const actual = actual2026Cache;
@@ -1047,6 +1124,10 @@
 
   function validate(r) {
     const tol = 1e-6;
+    /* Horizon money totals reach ~2 bn ₽; summing thousands of doubles leaves
+       ~1e-5 ₽ of rounding noise that varies with the JS engine, so aggregate
+       reconciliations are checked to the kopeck. */
+    const moneyTol = 0.01;
     return [
       [
         "Баланс каждого SKU / склада / месяца",
@@ -1097,7 +1178,7 @@
       ],
       [
         "Логистика складских проводок сходится с планом",
-        Math.abs(sum(r.ledgers, "logistics") - sum(r.rows, "logistics")) < 1e-5,
+        Math.abs(sum(r.ledgers, "logistics") - sum(r.rows, "logistics")) < moneyTol,
       ],
       [
         "Финансовый баланс",
@@ -1122,6 +1203,21 @@
             ) < tol &&
             Math.abs(
               x.massPrepCost + x.machineCost + x.finishingCost - x.conversionCost,
+            ) < tol,
+        ),
+      ],
+      [
+        "Валовая прибыль − коммерческие − управленческие = операционная прибыль",
+        r.rows.every(
+          (x) =>
+            Math.abs(
+              x.revenue - x.costOfSales - x.grossProfit,
+            ) < tol &&
+            Math.abs(
+              x.grossProfit -
+                x.commercialCost -
+                x.administrationCost -
+                x.operatingProfit,
             ) < tol,
         ),
       ],
@@ -1153,7 +1249,12 @@
     segments,
     scenarios,
     businessPlan,
+    previousSop,
     previousSopId,
+    previousSopCovers,
+    forecastErrorTable,
+    forecastAccuracyTarget,
+    forecastError,
     sum,
     demand,
     patterns,

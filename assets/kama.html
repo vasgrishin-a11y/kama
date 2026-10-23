@@ -78,6 +78,9 @@
             <button id="edit" class="button" type="button">
               Настроить сценарий
             </button>
+            <button id="delete-scenarios" class="button" type="button" disabled>
+              Удалить сценарии
+            </button>
             <button id="export" class="button primary" type="button">
               ↓ Экспорт Excel
             </button>
@@ -139,9 +142,7 @@
             <div>
               <div class="eyebrow">ОБЗОР ЦИКЛА ПЛАНИРОВАНИЯ</div>
               <h1 id="title"></h1>
-              <p id="subtitle"></p>
             </div>
-            <span class="status" id="validation"></span>
           </div>
           <div id="content" aria-live="polite"></div>
         </main>
@@ -161,9 +162,10 @@
             <div class="eyebrow">ПОЛЬЗОВАТЕЛЬСКАЯ КОПИЯ · ПЛАН С ОКТЯБРЯ 2026</div>
             <h2 id="editor-title">Параметры сценария</h2>
             <p>
-              Пять штатных версий останутся неизменными. Параметры пересчитают
-              спрос, кампании, раскрой, ресурсы, запасы и экономику.
+              Штатные версии V1–V5 остаются неизменными. Параметры пересчитают
+              спрос, кампании, раскрой, ресурсы, запасы, заказы и экономику.
             </p>
+            <p class="editor-base" id="editor-base"></p>
           </div>
           <button
             type="button"
@@ -174,6 +176,25 @@
             ✕
           </button>
         </div>
+
+        <section class="scenario-name-block" aria-labelledby="scenario-name-label">
+          <label id="scenario-name-label" for="scenario-name"
+            >НАЗВАНИЕ СЦЕНАРИЯ<input
+              id="scenario-name"
+              type="text"
+              maxlength="60"
+              autocomplete="off"
+              placeholder="Например: Рост спроса на Pharma +10%"
+              autofocus
+              required
+          /></label>
+          <small class="param-help"
+            >Обязательно перед запуском. Название появится в списке «Активный
+            план», в сравнении версий и в выгрузке Excel. Если изменить
+            название открытого пользовательского сценария, будет создан новый
+            сценарий, а исходный сохранится.</small
+          >
+        </section>
 
         <section
           class="scenario-period"
@@ -211,7 +232,7 @@
                   step="1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Масштаб прогноза неограниченного спроса по всем SKU в выбранном периоде. Выше 100% — больше заказов: растут выпуск, загрузка КДМ/БДМ, расход сырья и выручка; при нехватке мощности или сырья растёт непокрытый спрос.</small></label>
               <label
                 >Рост 2027 к базе, %<input
                   id="growth-input"
@@ -223,7 +244,7 @@
                   step="1"
                   value="0"
                   required
-              /></label>
+              /><small class="param-help">Дополнительный рост спроса только для месяцев 2027 года поверх «Спроса к базе». Меняет кампании, запасы и экономику 2027 года; 2026 год не затрагивает.</small></label>
               <label
                 >Сила сезонности, %<input
                   id="seasonality-input"
@@ -235,7 +256,7 @@
                   step="5"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Насколько месячный спрос отклоняется от среднего: 100% — исторический профиль, 0% — ровный спрос. Выше — глубже осенние пики и зимние провалы, больше нагрузка в пиковые месяцы и потребность в предсезонном запасе.</small></label>
               <label
                 >Цена реализации, %<input
                   id="price-input"
@@ -247,7 +268,7 @@
                   step="1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Индекс отпускных цен по всем продуктам. Меняет выручку, маржинальный доход и прибыль; объёмы производства и отгрузок не меняются.</small></label>
               <label class="wide-field"
                 >Приоритет планирования<select
                   id="priority-input"
@@ -257,7 +278,7 @@
                   <option value="balanced">Сбалансированный</option>
                   <option value="service">Сервис и Pharma</option>
                   <option value="margin">Маржинальный доход</option>
-                </select></label
+                </select><small class="param-help">Как делится мощность, если её не хватает на весь спрос: продуктовый порядок; сбалансированный — с предсезонным запасом перед ремонтами; сервис и Pharma — сначала фармацевтика; маржинальный доход — сначала самые доходные марки. Определяет, какие продукты получат объём, а какие — дефицит.</small></label
               >
             </div>
           </fieldset>
@@ -280,7 +301,7 @@
                   step="1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Производительность картоноделательной машины КДМ-9 к норме, т/ч. Выше — больше тонн за те же часы и меньше дефицит картона; ниже — часть спроса на картон не покрывается.</small></label>
               <label
                 >Скорость БДМ-7, %<input
                   id="bdm-rate-input"
@@ -292,7 +313,7 @@
                   step="1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Производительность бумагоделательной машины БДМ-7 к норме, т/ч. Выше — больше бумаги за те же часы; ниже — растёт дефицит по LWC, офсетным и SC-маркам.</small></label>
               <label
                 >Выход годного КДМ, %<input
                   id="kdm-yield-input"
@@ -304,7 +325,7 @@
                   step="0.1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Доля годного картона после брака к норме 98,5%. Выше — меньше брака, ниже расход сырья и энергии на тонну годного; ниже — нужен больший брутто-выпуск на тот же спрос.</small></label>
               <label
                 >Выход годного БДМ, %<input
                   id="bdm-yield-input"
@@ -316,7 +337,7 @@
                   step="0.1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Доля годной бумаги после брака к норме 98%. Влияет на брутто-выпуск, расход ресурсов и себестоимость тонны годного.</small></label>
               <label
                 >Время переходов, %<input
                   id="setup-input"
@@ -328,7 +349,7 @@
                   step="1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Длительность переналадок между марками и граммажами. Меньше — больше часов на выпуск и выше покрытие спроса; больше — меньше доступного фонда и выше риск дефицита.</small></label>
               <label
                 >Порог запуска кампании, т<input
                   id="min-campaign-input"
@@ -339,7 +360,7 @@
                   step="1"
                   value="8"
                   required
-              /></label>
+              /><small class="param-help">Минимальная потребность, при которой кампания «марка × граммаж» запускается в месяце. Выше — меньше коротких кампаний и переходов, но мелкие потребности уходят в запас или остаются непокрытыми.</small></label>
               <label
                 >Доп. ремонт КДМ, ч<input
                   id="repair-input"
@@ -350,13 +371,13 @@
                   step="1"
                   value="0"
                   required
-              /></label>
+              /><small class="param-help">Дополнительный простой КДМ-9 в выбранном месяце сверх планового ремонта. Сокращает доступные часы — выпуск картона в этом месяце падает, нужен запас заранее или растёт дефицит.</small></label>
               <label
                 >Месяц ремонта КДМ<select
                   id="repair-month-input"
                   data-param="repairMonth"
                 ></select
-              ></label>
+              ><small class="param-help">Месяц, к которому добавляются часы дополнительного ремонта КДМ-9.</small></label>
               <label
                 >Доп. ремонт БДМ, ч<input
                   id="bdm-repair-input"
@@ -367,13 +388,13 @@
                   step="1"
                   value="0"
                   required
-              /></label>
+              /><small class="param-help">Дополнительный простой БДМ-7 сверх планового ремонта. Сокращает выпуск бумаги в выбранном месяце.</small></label>
               <label
                 >Месяц ремонта БДМ<select
                   id="bdm-repair-month-input"
                   data-param="repairMonthBdm"
                 ></select
-              ></label>
+              ><small class="param-help">Месяц, к которому добавляются часы дополнительного ремонта БДМ-7.</small></label>
             </div>
           </fieldset>
 
@@ -395,7 +416,7 @@
                   step="1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Закупочная цена волокнистого сырья к базе. Меняет переменную себестоимость, маржинальный доход и прибыль; объёмы не меняются.</small></label>
               <label
                 >Индекс цены мелования, %<input
                   id="coat-cost-input"
@@ -407,7 +428,7 @@
                   step="1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Цена компонентов мелования (пигменты, связующие) к базе. Влияет на себестоимость мелованного картона и LWC.</small></label>
               <label
                 >Поставка волокна, %<input
                   id="fiber-supply-input"
@@ -419,7 +440,7 @@
                   step="1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Доступный месячный лимит волокна к базе 26,7 тыс. т. Ниже 100% — выпуск упирается в сырьё и растёт непокрытый спрос; выше — снимается сырьевое ограничение пиковых месяцев.</small></label>
               <label
                 >Поставка мелования, %<input
                   id="coat-supply-input"
@@ -431,7 +452,7 @@
                   step="1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Месячный лимит компонентов мелования к базе 4,1 тыс. т. Ограничивает выпуск мелованных марок.</small></label>
               <label
                 >Расход волокна, %<input
                   id="fiber-intensity-input"
@@ -443,7 +464,7 @@
                   step="1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Удельный расход волокна на тонну брутто. Выше — дороже тонна и раньше исчерпывается лимит поставки; ниже — экономия сырья.</small></label>
               <label
                 >Расход мелования, %<input
                   id="coat-intensity-input"
@@ -455,7 +476,7 @@
                   step="1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Удельный расход мелования на тонну брутто. Выше — дороже мелованные марки и быстрее исчерпывается лимит.</small></label>
             </div>
           </fieldset>
 
@@ -477,7 +498,7 @@
                   step="1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Доступная мощность энергоснабжения к базе 38,2 тыс. МВт·ч в месяц. Ниже — выпуск ограничивается энергией в пиковые месяцы.</small></label>
               <label
                 >Энергоёмкость, %<input
                   id="energy-intensity-input"
@@ -489,7 +510,7 @@
                   step="1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Расход электроэнергии на тонну брутто. Выше — больше энергозатрат на тонну и быстрее исчерпывается лимит; ниже — эффект энергосбережения.</small></label>
               <label
                 >Тариф энергии, %<input
                   id="energy-tariff-input"
@@ -501,7 +522,7 @@
                   step="1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Цена электроэнергии к базе. Меняет энергетическую часть себестоимости и затраты энергоцеха; объёмы не меняются.</small></label>
               <label
                 >Лимит оборотной воды, %<input
                   id="water-supply-input"
@@ -513,7 +534,7 @@
                   step="1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Доступный водооборот к базе 720 тыс. м³ в месяц. Ниже — ограничивает брутто-выпуск обеих машин.</small></label>
               <label
                 >Водоёмкость, %<input
                   id="water-intensity-input"
@@ -525,7 +546,7 @@
                   step="1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Расход оборотной воды на тонну брутто при норме 18 м³/т. Выше — быстрее исчерпывается лимит и растут затраты ЦОС.</small></label>
               <label
                 >Тариф воды и ЦОС, %<input
                   id="water-tariff-input"
@@ -537,7 +558,7 @@
                   step="1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Стоимость водоподготовки и очистки стоков к базе. Влияет только на себестоимость.</small></label>
             </div>
           </fieldset>
 
@@ -559,7 +580,7 @@
                   step="1"
                   value="30"
                   required
-              /></label>
+              /><small class="param-help">Страховой запас на конец месяца в % от спроса следующего месяца по каждому SKU и складу. Выше — выше сервис и устойчивость к сбоям, но больше выпуск «впрок» и затраты хранения; ниже — меньше запас и выше риск дефицита.</small></label>
               <label
                 >Ёмкость РЦ, %<input
                   id="storage-cap-input"
@@ -571,7 +592,7 @@
                   step="1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Вместимость региональных складов к базе. Ниже — РЦ не принимают полное пополнение, часть региональных продаж уходит в дефицит.</small></label>
               <label
                 >Тариф завод → РЦ, %<input
                   id="freight-input"
@@ -583,7 +604,7 @@
                   step="1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Стоимость магистральной перевозки завод → РЦ. Меняет логистические затраты и маржинальный доход.</small></label>
               <label
                 >Последняя миля, %<input
                   id="lastmile-input"
@@ -595,7 +616,7 @@
                   step="1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Стоимость доставки клиенту со склада. Влияет на логистику и маржинальный доход клиентов.</small></label>
               <label
                 >Стоимость хранения, %<input
                   id="holding-input"
@@ -607,7 +628,7 @@
                   step="1"
                   value="100"
                   required
-              /></label>
+              /><small class="param-help">Ставка хранения запасов на складах. Влияет на затраты хранения и прибыль; эффект сильнее при высоком целевом запасе.</small></label>
             </div>
           </fieldset>
         </div>
@@ -617,11 +638,42 @@
             Сбросить изменения</button
           ><span class="dialog-spacer"></span
           ><button type="button" id="cancel" class="button">Отмена</button
-          ><button type="submit" class="button primary">
+          ><button type="submit" id="editor-submit" class="button primary">
             Создать и пересчитать
           </button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="scenario-manager" aria-labelledby="manager-title">
+      <div class="editor-heading">
+        <div>
+          <div class="eyebrow">ПОЛЬЗОВАТЕЛЬСКИЕ СЦЕНАРИИ</div>
+          <h2 id="manager-title">Удаление сценариев</h2>
+          <p>
+            Штатные версии V1–V5 удалить нельзя. Если удалить активный план,
+            дашборд переключится на V5 · Сбалансированный план.
+          </p>
+        </div>
+        <button
+          type="button"
+          id="manager-close-x"
+          class="icon-button"
+          aria-label="Закрыть окно удаления"
+        >
+          ✕
+        </button>
+      </div>
+      <div id="manager-list" class="manager-list"></div>
+      <div class="dialog-actions">
+        <button type="button" id="manager-delete-all" class="button danger-outline">
+          Удалить все</button
+        ><span class="dialog-spacer"></span
+        ><button type="button" id="manager-close" class="button">Закрыть</button
+        ><button type="button" id="manager-delete-selected" class="button danger">
+          Удалить выбранные
+        </button>
+      </div>
     </dialog>
     <div id="toast" role="status"></div>
   </body>
