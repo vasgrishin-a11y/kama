@@ -460,6 +460,27 @@ th {
   padding: 12px 13px;
   border-bottom: 1px solid var(--line);
 }
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+}
+th.sortable:hover {
+  background: #e9eef5;
+  color: #1f3a93;
+}
+th.sortable:focus-visible {
+  outline: 2px solid #4769ff;
+  outline-offset: -2px;
+}
+th.sortable.sorted {
+  color: #1f3a93;
+}
+th.sortable:not(.sorted)::after {
+  content: " \2195";
+  opacity: 0.3;
+  font-size: 0.85em;
+}
 td {
   padding: 12px 13px;
   border-bottom: 1px solid #edf0f3;
@@ -552,6 +573,64 @@ tbody tr:hover {
 .heat-cell.hot {
   background: #f3deb9;
   color: #8f5919 !important;
+}
+
+/* Логика отбора и рецептуры массоподготовки — поясняющие блоки */
+.panel-note {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #45546b;
+  background: #f3f6fb;
+  border-left: 3px solid #4769ff;
+  padding: 10px 14px;
+  border-radius: 6px;
+  margin: 0 0 16px;
+}
+.panel-note b {
+  color: #1f2d3d;
+}
+
+.recipe-reference {
+  margin: 18px 0 6px;
+}
+.recipe-note {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #45546b;
+  background: #f3f6fb;
+  border-left: 3px solid #8b5cf6;
+  padding: 10px 14px;
+  border-radius: 6px;
+  margin-bottom: 14px;
+}
+.recipe-reference table th:first-child,
+.recipe-reference table td:first-child {
+  text-align: left;
+  font-weight: 600;
+}
+
+/* Тепловая карта ошибки прогноза по клиентам */
+.client-error-heat {
+  grid-template-columns: 150px repeat(9, minmax(36px, 1fr)) 64px;
+  margin-top: 8px;
+}
+.client-error-heat .heat-rowhead {
+  text-align: left;
+  font-weight: 650;
+  font-size: 11px;
+  padding-left: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #2b3a4f;
+}
+.client-error-heat .heat-cell {
+  color: #1f2d3d !important;
+  font-size: 10px;
+}
+.client-error-heat .heat-cell.heat-avg {
+  font-weight: 800;
+  box-shadow: inset 0 0 0 1px rgba(23, 40, 62, 0.25);
 }
 .network {
   display: flex;

@@ -84,7 +84,7 @@ test("UI: the previous cycle is the default; the active scenario updates cards, 
     assert.equal(landing.label, "Выручка · факт + прогноз Янв–дек 2026");
     near(landing.value, mln(v5.rows), "прошлый цикл = V5");
     near(landing.bp, mln(bp[2026].rows), "БП года");
-    near(point(d, "Дек 2026 · Ожидаемое закрытие"), mln(inMonths(v5.rows, [11])), "график выручки");
+    near(point(d, "Дек 2026 · Прогноз S&OP", "Выручка: закрытие года против бизнес-плана"), mln(inMonths(v5.rows, [11])), "график выручки");
     assert.match(d.querySelector(".chart-context").textContent, /БП · факт · прошлый цикл S&OP/);
     assert.match(d.querySelector(".revenue-panel .panel-heading small").textContent, /^Прошлый цикл S&OP \(V5\) против бизнес-плана · Янв–дек 2026$/);
     let december = monthRows(d).at(-1);
@@ -101,7 +101,7 @@ test("UI: the previous cycle is the default; the active scenario updates cards, 
     near(number(cards(d)[4].value), sum(v2.rows, "margin") / 1e6, "МД V2");
     assert.equal(number(cards(d)[5].value), Math.round(sum(v2.rows, "sales")));
     assert.deepEqual(cards(d).slice(0, 3).map((c) => c.value), factBefore, "факт одинаков в обоих режимах");
-    near(point(d, "Дек 2026 · Ожидаемое закрытие"), mln(inMonths(v2.rows, [11])), "график выручки V2");
+    near(point(d, "Дек 2026 · Прогноз S&OP", "Выручка: закрытие года против бизнес-плана"), mln(inMonths(v2.rows, [11])), "график выручки V2");
     near(point(d, "Дек 2026 · Факт / прогноз S&OP"), sum(inMonths(v2.rows, [11]), "margin") / 1e6, "график МД V2");
     assert.match(d.querySelector(".chart-context").textContent, /БП · факт · сценарий V2/);
     assert.match(d.querySelector(".revenue-panel .panel-heading small").textContent, /^V2 · Приоритет маржинального дохода против бизнес-плана/);
@@ -141,7 +141,7 @@ test("UI: months outside the previous cycle horizon are empty; the active scenar
     assert.equal(landing.label, "Выручка · прогноз Янв–ноя 2027");
     near(landing.value, mln(inMonths(v5.rows, janNov)), "прошлый цикл Янв–ноя");
     near(landing.bp, mln(inMonths(bp[2027].rows, janNov)), "БП тех же месяцев");
-    for (const series of ["Прогноз S&OP", "Ожидаемое закрытие", "Факт / прогноз S&OP", "Выпуск · факт / прогноз", "Запас · факт / прогноз"]) {
+    for (const series of ["Прогноз S&OP", "Факт / прогноз S&OP", "Выпуск · факт / прогноз", "Запас · факт / прогноз"]) {
       assert.equal(point(d, `Дек 2027 · ${series}`), null, series);
       assert.notEqual(point(d, `Ноя 2027 · ${series}`), null, series);
     }
@@ -167,7 +167,7 @@ test("UI: months outside the previous cycle horizon are empty; the active scenar
     assert.ok(d.querySelector(".revenue-mix-chart"));
     change(w, "#scenario", "margin");
     near(landingRevenue(d).value, mln(inMonths(v2.rows, [11])), "декабрь V2");
-    near(point(d, "Дек 2027 · Ожидаемое закрытие"), mln(inMonths(v2.rows, [11])), "график декабря V2");
+    near(point(d, "Дек 2027 · Прогноз S&OP", "Выручка: закрытие года против бизнес-плана"), mln(inMonths(v2.rows, [11])), "график декабря V2");
     assert.equal(monthRows(d)[0][1], "Прогноз · V2");
 
     d.querySelector('[data-overview-source="previous"]').click();
