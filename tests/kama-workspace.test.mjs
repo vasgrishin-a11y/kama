@@ -21,6 +21,12 @@ function browser() {
     readFileSync(new URL("../assets/kama-model.js", import.meta.url), "utf8"),
   );
   w.eval(
+    readFileSync(new URL("../assets/kama-analytics.js", import.meta.url), "utf8"),
+  );
+  w.eval(
+    readFileSync(new URL("../assets/kama-orders.js", import.meta.url), "utf8"),
+  );
+  w.eval(
     readFileSync(new URL("../assets/kama-app.js", import.meta.url), "utf8"),
   );
   return dom;
@@ -157,7 +163,8 @@ test("workspace: year filters, real panel expansion, navigation and detailed pro
     assert.equal(d.querySelectorAll(".heat .machine").length, 7);
     assert.equal(d.querySelectorAll(".campaign-stage").length, 3);
     assert.equal(d.querySelectorAll(".process-sankey").length, 1);
-    assert.equal(d.querySelector(".campaign-panel").closest(".grid"), null);
+    assert.equal(d.querySelector(".campaign-panel"), null);
+    assert.equal(d.querySelectorAll(".campaign-stage.embedded").length, 3);
     const headings = [...d.querySelectorAll(".stage-panel h2")].map(
       (h) => h.textContent,
     );
