@@ -1105,6 +1105,10 @@
 
   function validate(r) {
     const tol = 1e-6;
+    /* Horizon money totals reach ~2 bn ₽; summing thousands of doubles leaves
+       ~1e-5 ₽ of rounding noise that varies with the JS engine, so aggregate
+       reconciliations are checked to the kopeck. */
+    const moneyTol = 0.01;
     return [
       [
         "Баланс каждого SKU / склада / месяца",
@@ -1155,7 +1159,7 @@
       ],
       [
         "Логистика складских проводок сходится с планом",
-        Math.abs(sum(r.ledgers, "logistics") - sum(r.rows, "logistics")) < 1e-5,
+        Math.abs(sum(r.ledgers, "logistics") - sum(r.rows, "logistics")) < moneyTol,
       ],
       [
         "Финансовый баланс",
