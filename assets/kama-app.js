@@ -41,6 +41,8 @@
     ["orders", "✓", "Управление заказами"],
   ];
   let year = 2026;
+  const tableSorts = new Map(); /* tableKey -> { col, dir: "asc" | "desc" }; persistently stores column sort */
+  let tableSeq = 0;
   const horizonResults = new Map(
     M.scenarios.map((c) => [c.id, M.runHorizon(c)]),
   );
@@ -227,6 +229,8 @@
             end: elapsed,
             setup,
             run,
+            recipe: M.recipes ? M.recipes[c.product] : undefined,
+            supplies: c.machine,
           });
         });
         capacities.push({
@@ -312,8 +316,50 @@
     return `<section class="panel ${hasChart ? "chart-panel" : ""} ${className}" id="${id}"><div class="panel-head"><div class="panel-heading"><h2>${title}</h2>${sub ? `<small>${sub}</small>` : ""}</div><button class="panel-toggle" type="button" data-expand-panel="${id}" aria-expanded="false" aria-controls="${id}-body" aria-label="Развернуть: ${esc(title)}" title="Развернуть почти на весь дашборд"><span class="expand-icon" aria-hidden="true">⛶</span><span>Развернуть</span></button></div><div class="panel-body" id="${id}-body">${body}</div></section>`;
   }
 
-  function table(headers, rows) {
-    return `<div class="table-wrap"><table><thead><tr>${headers.map((h) => `<th scope="col">${h}</th>`).join("")}</tr></thead><tbody>${rows.length ? rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("") : `<tr><td colspan="${headers.length}">Нет строк для выбранных фильтров</td></tr>`}</tbody></table></div>`;
+  /* Plain text of a cell, used both for sorting and for clean tooltip text. */
+  function cellText(s) {
+    return String(s).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  }
+  /* Best-effort numeric extraction from a cell (ru-RU thousands/decimals,
+     minus/unbreakable-space, "%"/"т"/"млн ₽" suffixes, embedded in HTML). */
+  function toNumber(s) {
+    const t = cellText(s);
+    if (t === "—" || t === "–" || t === "") return null;
+    const n = t.replace(/[  ]/g, "").replace(/−/g, "-").replace(/,/g, ".").match(/-?\d+(?:\.\d+)?/);
+    return n ? parseFloat(n[0]) : null;
+  }
+  /* Compare two cell values: numeric columns sort numerically, "—"/empty sink
+     to the bottom, everything else sorts as Russian text. */
+  function compareCells(a, b) {
+    const na = toNumber(a), nb = toNumber(b);
+    if (na !== null && nb !== null) return na - nb;
+    const ta = cellText(a), tb = cellText(b);
+    const empty = (v) => v === "—" || v === "–" || v === "";
+    if (empty(ta) && empty(tb)) return 0;
+    if (empty(ta)) return 1;
+    if (empty(tb)) return -1;
+    return ta.localeCompare(tb, "ru");
+  }
+
+  /* Generic data table. Every column header is clickable and sorts that column;
+     sort state is kept in `tableSorts` keyed by a stable table id, so it survives
+     re-renders. `key` lets paged() share one stable id across renders. */
+  function table(headers, rows, opts = {}) {
+    const key = opts.key || `tbl-${tableSeq++}`;
+    const sort = opts.skipSort ? null : tableSorts.get(key);
+    let body = rows;
+    if (sort && rows.length) {
+      const dir = sort.dir === "asc" ? 1 : -1;
+      body = [...rows].sort((r1, r2) => dir * compareCells(r1[sort.col] ?? "", r2[sort.col] ?? ""));
+    }
+    const head = headers
+      .map((h, i) => {
+        const active = sort && sort.col === i;
+        const arrow = active ? (sort.dir === "asc" ? " ▲" : " ▼") : "";
+        return `<th scope="col" class="sortable${active ? " sorted" : ""}" data-table-key="${esc(key)}" data-col="${i}" tabindex="0" title="Сортировать по «${esc(cellText(h))}»" aria-sort="${active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}">${h}${arrow}</th>`;
+      })
+      .join("");
+    return `<div class="table-wrap"><table data-table-key="${esc(key)}"><thead><tr>${head}</tr></thead><tbody>${body.length ? body.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("") : `<tr><td colspan="${headers.length}">Нет строк для выбранных фильтров</td></tr>`}</tbody></table></div>`;
   }
   function paged(id, headers, rows) {
     const state = pages[id] || { page: 0, search: "" };
@@ -321,9 +367,14 @@
     const filtered = rows.filter((r) =>
       r.join(" ").toLowerCase().includes(state.search.toLowerCase()),
     );
+    const sort = tableSorts.get(id);
+    if (sort && filtered.length) {
+      const dir = sort.dir === "asc" ? 1 : -1;
+      filtered.sort((r1, r2) => dir * compareCells(r1[sort.col] ?? "", r2[sort.col] ?? ""));
+    }
     const count = Math.max(1, Math.ceil(filtered.length / 24));
     state.page = Math.min(state.page, count - 1);
-    return `<div class="table-tools"><span>${fmt(filtered.length)} строк · по 24 на странице</span><input data-search="${id}" aria-label="Поиск в таблице ${id}" placeholder="Поиск по таблице…" value="${esc(state.search)}"></div>${table(headers, filtered.slice(state.page * 24, (state.page + 1) * 24))}<div class="pager"><button class="button" data-page="${id}" data-step="-1" ${state.page === 0 ? "disabled" : ""}>← Назад</button><span>${state.page + 1} / ${count}</span><button class="button" data-page="${id}" data-step="1" ${state.page === count - 1 ? "disabled" : ""}>Далее →</button></div>`;
+    return `<div class="table-tools"><span>${fmt(filtered.length)} строк · по 24 на странице</span><input data-search="${id}" aria-label="Поиск в таблице ${id}" placeholder="Поиск по таблице…" value="${esc(state.search)}"></div>${table(headers, filtered.slice(state.page * 24, (state.page + 1) * 24), { key: id, skipSort: true })}<div class="pager"><button class="button" data-page="${id}" data-step="-1" ${state.page === 0 ? "disabled" : ""}>← Назад</button><span>${state.page + 1} / ${count}</span><button class="button" data-page="${id}" data-step="1" ${state.page === count - 1 ? "disabled" : ""}>Далее →</button></div>`;
   }
   function monthly(r, key) {
     return M.months.map((_, m) =>
@@ -646,7 +697,7 @@
       ${panel("Выручка: закрытие года против бизнес-плана", "млн ₽", chart("Выручка против бизнес-плана", [
         { name: "Бизнес-план", values: bpMonthly("revenue", 1e6), color: "#b8c0cc" },
         { name: "Факт", values: actualMonthly("revenue", 1e6), color: "#4769ff" },
-        { name: "Ожидаемое закрытие", values: landingMonthly("revenue", 1e6), color: "#19a27b", line: true, dashed: false },
+        { name: "Прогноз S&OP", values: forecastMonthly("revenue", 1e6), color: "#8b5cf6", line: true, dashed: false },
       ], "млн ₽", { compare: true, context }))}
     </div>
     ${panel("Выручка по направлениям", directionSub, directionBody, "revenue-panel")}
@@ -696,16 +747,34 @@
     });
     const scores = clients.map((client) => ({
       client,
+      marginDev: (client.marginRate - client.marginTarget) * 100,
+      otifDev: (client.otif - client.otifTarget) * 100,
       score: (client.marginRate - client.marginTarget) * 0.7 + (client.otif - client.otifTarget) * 0.3,
     })).sort((a, b) => a.score - b.score);
-    scores.filter(({ client }) => client.otif < client.otifTarget || client.marginRate < client.marginTarget).slice(0, 3).forEach(({ client }) => {
-      client.review = "На пересмотр: наиболее слабое сочетание маржи МД и OTIF относительно целей сегмента";
-      client.reviewDirection = "down";
-    });
-    scores.filter((item) => item.score > 0).slice(-2).forEach(({ client }) => {
-      client.review = "На пересмотр: кандидат на повышение по марже и сервису";
-      client.reviewDirection = "up";
-    });
+    /* Кейсы на пересмотр выбираются по отклонению от ПРАВИЛ сегмента: клиент
+       попадает в поле зрения S&OP, только если его маржа МД и/или OTIF ушли за
+       целевые рамки своего сегмента. Берём трёх с наибольшим негативным
+       отклонением (они намеренно выбиваются из правил сегмента вниз) и двух с
+       наибольшим позитивным (кандидаты на повышение, выше правил сегмента). */
+    scores
+      .filter(({ marginDev, otifDev }) => marginDev < 0 || otifDev < 0)
+      .slice(0, 3)
+      .forEach(({ client, marginDev, otifDev }) => {
+        const parts = [];
+        if (marginDev < 0)
+          parts.push(`маржа МД ${pct(client.marginRate)} при цели сегмента ${pct(client.marginTarget)} (${signed(marginDev, 1)} п.п.)`);
+        if (otifDev < 0)
+          parts.push(`OTIF ${pct(client.otif)} при цели ${pct(client.otifTarget)} (${signed(otifDev, 1)} п.п.)`);
+        client.review = `На пересмотр: выбивается из правил сегмента «${client.segment}» — ${parts.join("; ")}`;
+        client.reviewDirection = "down";
+      });
+    scores
+      .filter(({ marginDev, otifDev }) => marginDev > 0 && otifDev > 0)
+      .slice(-2)
+      .forEach(({ client, marginDev, otifDev }) => {
+        client.review = `Кандидат на повышение: выше правил сегмента «${client.segment}» — маржа МД ${pct(client.marginRate)} (+${fmt(marginDev, 1)} п.п.), OTIF ${pct(client.otif)} (+${fmt(otifDev, 1)} п.п.)`;
+        client.reviewDirection = "up";
+      });
     const segments = M.segments.map((name, index) => {
       const clientsInSegment = clients.filter((client) => client.segment === name);
       const revenue = S(clientsInSegment, "revenue");
@@ -752,6 +821,10 @@
       return `<div class="segment-band ${hidden ? "is-off" : ""}" style="--segment:${segment.color}"><div class="segment-band-head"><div><b>${esc(segment.name)}</b><span>${segment.clients.length} клиента · выручка ${money(segment.revenue)} млн ₽ · валовая прибыль ${money(segment.grossProfit)} млн ₽</span></div>${otif}</div><div class="segment-bubbles">${hidden ? '<span class="muted">Сегмент скрыт фильтром</span>' : bubbles}</div></div>`;
     }).join("");
     return `<div class="chart-toolbar"><div class="flow-switch" role="group" aria-label="Фильтр клиентов на пересмотр"><button type="button" data-seg-review="all" aria-pressed="${!segmentReviewOnly}">Все клиенты</button><button type="button" data-seg-review="review" aria-pressed="${segmentReviewOnly}">⚑ На пересмотр (${analytics.clients.filter((c) => c.review).length})</button></div><span class="chart-context">Площадь круга — валовая прибыль · сегменты по убыванию валовой прибыли · кольцо: зелёное ↑ / красное ↓</span></div><div class="segment-matrix">${bands}</div><div class="segment-legend">${analytics.segments.map((segment) => `<button type="button" data-seg-toggle="${esc(segment.name)}" class="${segmentOff.has(segment.name) ? "off" : ""}" aria-pressed="${!segmentOff.has(segment.name)}"><i style="background:${segment.color}"></i>${esc(segment.name)}</button>`).join("")}</div>`;
+  }
+
+  function segmentationNote() {
+    return `<p class="panel-note"><b>Логика отбора на пересмотр.</b> Клиент попадает в поле зрения S&OP, когда его маржа МД и/или OTIF отклоняются от целевых <b>правил своего сегмента</b> (цели маржи и сервиса заданы отдельно для каждого из 6 сегментов). Кольцо ↓ (красное) — наибольшее негативное отклонение: кейс намеренно <b>выбивается из правил сегмента вниз</b> и требует пересмотра цены или условий. Кольцо ↑ (зелёное) — кандидат на повышение, превышающий правила сегмента. В таблице «Клиенты, сервис и статус пересмотра» и во всплывающих подсказках пузырей указано конкретное отклонение от цели.</p>`;
   }
 
   function otifBySegment(analytics) {
@@ -825,10 +898,11 @@
         { name: "Бизнес-план · отгрузки", values: bpMonthlySales, color: "#19a27b" },
         { name: "Активный план · отгрузки", values: monthly(r, "sales"), color: "#4769ff" },
       ]))}${panel("Спрос по клиентским сегментам", "т", horizontalChart("Спрос по сегментам", segmentItems, "т", 0))}</div>
-      ${panel("Сегментация клиентов", "Размер круга — валовая прибыль клиента", segmentationMatrix(analytics), "segmentation-panel")}
+      ${panel("Сегментация клиентов", "Размер круга — валовая прибыль клиента", segmentationNote() + segmentationMatrix(analytics), "segmentation-panel")}
       ${panel("OTIF по сегментам и клиентам", "Факт против цели сегмента", otifBySegment(analytics), "otif-panel")}
       ${panel("Покрытие по ассортименту и клиентам", "Продукт × клиент", paged("coverage", ["Продукт", "Клиент", "Спрос, т", "Отгрузки, т", "Покрытие", "Выручка, млн ₽", "Валовая прибыль, млн ₽", "МД, млн ₽", "Маржа МД", "Цель маржи", "Отклонение"], coverageRows))}
-      ${panel("Клиенты, сервис и статус пересмотра", "24 клиента", paged("clients", ["Клиент", "Сегмент", "Основной склад", "Спрос, т", "Отгрузки, т", "Выручка, млн ₽", "Валовая прибыль, млн ₽", "МД, млн ₽", "OTIF", "Цель", "Статус"], clientRows))}`;
+      ${panel("Клиенты, сервис и статус пересмотра", "24 клиента", paged("clients", ["Клиент", "Сегмент", "Основной склад", "Спрос, т", "Отгрузки, т", "Выручка, млн ₽", "Валовая прибыль, млн ₽", "МД, млн ₽", "OTIF", "Цель", "Статус"], clientRows))}
+      ${panel("Ошибка прогноза по клиентам", "Лаг-1 ошибка прогноза спроса, янв–сен 2026 · взвешено по спросу клиента", forecastErrorHeat(r), "client-error-panel")}`;
   }
 
   function orderDate(value) {
@@ -937,6 +1011,66 @@
       .join(
         "",
       )}</div></div><div class="heat-legend"><span><i class="ok"></i>&lt;90%</span><span><i class="hot"></i>90–100%</span><span><i class="overload"></i>&gt;100% · узкое место</span></div>`;
+  }
+
+  /* Heat map: forecast error per client × reported month. The product-level
+     lag-1 forecast error (M.forecastError) is weighted by each client's demand
+     for that product, so a client cell shows the error of the actual mix it
+     bought. Positive = over-forecast (stock build), negative = under-forecast. */
+  function forecastErrorHeat(r) {
+    const cr = r.customerRows.filter(eligible);
+    const months = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+    const clients = M.clients;
+    const cell = (client, m) => {
+      const rows = cr.filter((x) => x.client === client.id && x.month === m);
+      if (!rows.length) return null;
+      let weighted = 0,
+        wsum = 0;
+      for (const row of rows) {
+        const pid = sku(row.sku)?.product;
+        const e = M.forecastError(pid, m);
+        const w = row.demand || row.sales;
+        weighted += e * w;
+        wsum += w;
+      }
+      return wsum ? weighted / wsum : null;
+    };
+    const all = [];
+    for (const c of clients)
+      for (const m of months) {
+        const v = cell(c, m);
+        if (v != null) all.push(v);
+      }
+    const maxAbs = Math.max(0.05, ...all.map((v) => Math.abs(v)));
+    const fmtErr = (v) =>
+      v == null ? "" : `${v > 0 ? "+" : "−"}${fmt(Math.abs(v) * 100, 0)}%`;
+    const color = (v) => {
+      if (v == null) return "#eef2f6";
+      const t = Math.min(1, Math.abs(v) / maxAbs);
+      const a = (0.12 + t * 0.62).toFixed(2);
+      return v > 0 ? `rgba(198,85,98,${a})` : `rgba(56,163,199,${a})`;
+    };
+    const header = `<span class="heat-rowhead">Клиент</span>${months
+      .map((m) => `<span>${M.months[m]}</span>`)
+      .join("")}<span class="heat-rowhead">∑</span>`;
+    const body = clients
+      .map((client) => {
+        const vals = months.map((m) => cell(client, m));
+        const valid = vals.filter((v) => v != null);
+        const avg = valid.length
+          ? valid.reduce((a, b) => a + b, 0) / valid.length
+          : null;
+        const cells = vals
+          .map(
+            (v, i) =>
+              `<span class="heat-cell" title="${esc(client.name)} · ${M.months[i]} 2026: ошибка прогноза ${fmtErr(v) || "нет данных"}" style="background:${color(v)}">${fmtErr(v)}</span>`,
+          )
+          .join("");
+        const avgCell = `<span class="heat-cell heat-avg" title="${esc(client.name)} · средняя ошибка прогноза: ${fmtErr(avg) || "нет данных"}" style="background:${color(avg)}">${fmtErr(avg)}</span>`;
+        return `<span class="heat-rowhead" title="${esc(client.name)} · ${esc(client.segment)}">${esc(client.name)}</span>${cells}${avgCell}`;
+      })
+      .join("");
+    return `<div class="chart-scroll"><div class="heat client-error-heat" style="grid-template-columns:150px repeat(9,minmax(36px,1fr)) 64px">${header}${body}</div></div><div class="heat-legend"><span><i style="background:rgba(198,85,98,0.7)"></i>перепрогноз (запас растёт)</span><span><i style="background:rgba(56,163,199,0.7)"></i>недопрогноз (риск дефицита)</span><span>∑ — средняя за янв–сен 2026</span></div>`;
   }
 
   function monthlyCampaigns(r, key, machine = "") {
@@ -1069,6 +1203,34 @@
     return `<div class="stage-metrics">${items.map(([label, value, note]) => `<div><small>${label}</small><strong>${value}</strong><span>${note}</span></div>`).join("")}</div>`;
   }
 
+  /* Recipe reference for mass preparation, adapted from the example of layering
+     bleached hardwood (ЛЦ), bleached softwood (ХЦ) and bleached CTMP (BCTMP).
+     Shows how mass-prep campaigns are grouped by furnish and feed KDM-9 / БДМ-7. */
+  function massRecipeReference() {
+    const families = [
+      { name: "Картон GC1 (мелованный)", ids: ["bright", "pharma", "tobacco1"] },
+      { name: "Картон GC2", ids: ["strong", "project", "tobacco2"] },
+      { name: "Бумага мелованная (LWC)", ids: ["lwc", "satin"] },
+      { name: "Бумага немелованная (офсет / SC / PU)", ids: ["offset", "sc", "bulk", "medical"] },
+    ];
+    const rows = [
+      ["Лиственная белёная (ЛЦ)", "lc"],
+      ["Хвойная белёная (ХЦ)", "sc"],
+      ["Белёная ХТММ (BCTMP)", "bctmp"],
+      ["Мелование", "coat"],
+    ];
+    const body = rows.map(([label, key]) => [
+      label,
+      ...families.map((f) => {
+        const vals = f.ids.map((id) => M.recipes[id]).filter(Boolean);
+        if (!vals.length) return "—";
+        const avg = vals.reduce((s, r) => s + r[key], 0) / vals.length;
+        return pct(avg);
+      }),
+    ]);
+    return `<div class="recipe-reference"><div class="recipe-note">Массоподготовка готовит <b>семейства массы</b> по рецептуре волокна и подаёт их на КДМ-9 (картон) и БДМ-7 (бумага). Кампании массоподготовки сгруппированы по рецептуре — по аналогии с примером композиции слоёв картона (ЛЦ / ХЦ / BCTMP). Ниже — усреднённая рецептура КАМА по семействам продукции.</div>${table(["Компонент массы", ...families.map((f) => f.name)], body)}</div>`;
+  }
+
   function machineDetail(r, machine) {
     const camps = r.campaigns.filter(
       (c) => c.machine === machine && eligible(c),
@@ -1102,15 +1264,21 @@
   }
 
   function campaignTimeline(operations, stage) {
+    const isMass = stage === "Массоподготовка";
     const units = [...new Map(operations.capacities.map((c) => [c.machine, c])).values()].filter(
       (c) => c.stage === stage && (family === "all" || c.family === "all" || c.family === family),
     );
-    return `<section class="campaign-stage embedded"><h3>Последовательность кампаний · ${esc(stage)}</h3>${units.map((unit) => `<div class="campaign-machine"><h4>${esc(unit.name)}</h4>${M.months.map((mn, mi) => {
+    return `<section class="campaign-stage embedded"><h3>Последовательность кампаний · ${esc(stage)}${isMass ? " → КДМ-9 / БДМ-7" : ""}</h3>${isMass ? '<p class="panel-note">Кампании массоподготовки сгруппированы по рецептуре волокна (ЛЦ / ХЦ / BCTMP) и «снабжают» последующие кампании на КДМ-9 (картон) и БДМ-7 (бумага). Состав массы в каждом месяце — тот, что готовится для подачи на машину.</p>' : ""}${units.map((unit) => `<div class="campaign-machine"><h4>${esc(unit.name)}</h4>${M.months.map((mn, mi) => {
       if (mi < fromMonth || mi > toMonth) return "";
       const c = operations.capacities.find((x) => x.machine === unit.machine && x.month === mi);
       const cs = operations.campaigns.filter((x) => x.machine === unit.machine && x.month === mi);
       if (!c) return "";
-      return `<button class="campaign-month ${month === String(mi) ? "selected" : ""}" data-camp-month="${mi}" aria-label="Выбрать кампании ${mn} ${year}"><span>${mn}</span><div class="timeline">${cs.map((x) => `<i style="width:${((x.run + x.setup) / c.calendar) * 100}%" title="${esc(product(x.product).name)} · ${x.gram} г/м² · выпуск ${fmt(x.good)} т · ${fmt(x.run + x.setup, 1)} ч"></i>`).join("")}<i class="repair" style="width:${(c.repair / c.calendar) * 100}%" title="Плановый ремонт · ${fmt(c.repair)} ч"></i></div><small>${fmt(c.run)} ч работы · ${fmt(c.setup)} ч переходов · ${c.used > c.available ? `<b class="delta-neg">дефицит ${fmt(c.used - c.available)} ч</b>` : `резерв ${fmt(c.available - c.used)} ч`}</small></button>`;
+      return `<button class="campaign-month ${month === String(mi) ? "selected" : ""}" data-camp-month="${mi}" aria-label="Выбрать кампании ${mn} ${year}"><span>${mn}</span><div class="timeline">${cs.map((x) => {
+        const recipe = isMass && x.recipe;
+        const recipeText = recipe ? ` · масса ${pct(recipe.lc)} ЛЦ / ${pct(recipe.sc)} ХЦ${recipe.bctmp ? ` / ${pct(recipe.bctmp)} BCTMP` : ""}${recipe.coat ? ` + ${pct(recipe.coat)} мелование` : ""}` : "";
+        const suppliesText = isMass && x.supplies ? ` · снабжает ${x.supplies}` : "";
+        return `<i style="width:${((x.run + x.setup) / c.calendar) * 100}%" title="${esc(product(x.product).name)} · ${x.gram} г/м² · выпуск ${fmt(x.good)} т · ${fmt(x.run + x.setup, 1)} ч${recipeText}${suppliesText}"></i>`;
+      }).join("")}<i class="repair" style="width:${(c.repair / c.calendar) * 100}%" title="Плановый ремонт · ${fmt(c.repair)} ч"></i></div><small>${fmt(c.run)} ч работы · ${fmt(c.setup)} ч переходов · ${c.used > c.available ? `<b class="delta-neg">дефицит ${fmt(c.used - c.available)} ч</b>` : `резерв ${fmt(c.available - c.used)} ч`}</small></button>`;
     }).join("")}</div>`).join("")}</section>`;
   }
 
@@ -1250,7 +1418,7 @@
           ],
           "т",
           { width: 1120, height: 300 },
-        )}${table(["Направление", "Брутто, т", "Волокно, т абс. сух.", "Годный, т", "Сквозной выход"], massRows)}${campaignTimeline(operations, "Массоподготовка")}`,
+        )}${table(["Направление", "Брутто, т", "Волокно, т абс. сух.", "Годный, т", "Сквозной выход"], massRows)}${massRecipeReference()}${campaignTimeline(operations, "Массоподготовка")}`,
         "stage-panel",
       )}
       ${panel("Этап 2 · КДМ-9 и БДМ-7", "Брутто, годный выпуск, переходы", `<div class="grid equal machine-grid">${family === "Бумага" ? "" : machineDetail(r, "КДМ-9")}${family === "Картон" ? "" : machineDetail(r, "БДМ-7")}</div>${campaignTimeline(operations, "КДМ / БДМ")}`, "stage-panel")}
@@ -2127,6 +2295,7 @@
   function render() {
     closeExpandedPanel();
     panelCounter = 0;
+    tableSeq = 0;
     const r = results.get(active),
       t = totals(r),
       current = tabs.find((x) => x[0] === tab);
@@ -2156,6 +2325,24 @@
   }
 
   function wireContent() {
+    document.querySelectorAll("th.sortable").forEach((th) => {
+      const trigger = () => {
+        const key = th.dataset.tableKey;
+        const col = Number(th.dataset.col);
+        const cur = tableSorts.get(key);
+        let dir = "asc";
+        if (cur && cur.col === col) dir = cur.dir === "asc" ? "desc" : "asc";
+        tableSorts.set(key, { col, dir });
+        render();
+      };
+      th.onclick = trigger;
+      th.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          trigger();
+        }
+      };
+    });
     document.querySelectorAll("[data-overview-source]").forEach((btn) => (btn.onclick = () => {
       overviewSource = btn.dataset.overviewSource === "active" ? "active" : "previous";
       render();

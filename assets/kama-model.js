@@ -224,6 +224,25 @@
     node: nodes[i % nodes.length].id,
     weight: 1 + (i % 4) * 0.15,
   }));
+  /* Furnishing recipe per product (mass-prep input). Fractions lc/sc/bctmp sum
+     to 1 for the fibre part; coat is the coating fraction on top. Adapted from
+     the example of layering bleached hardwood (ЛЦ), bleached softwood (ХЦ) and
+     bleached CTMP (BCTMP); mass-prep campaigns are grouped by this recipe and
+     feed the downstream KDM-9 (carton) / БДМ-7 (paper) machines. */
+  const recipes = {
+    bright: { lc: 0.45, sc: 0.45, bctmp: 0.1, coat: 0.15 },
+    pharma: { lc: 0.45, sc: 0.5, bctmp: 0.05, coat: 0.15 },
+    tobacco1: { lc: 0.47, sc: 0.48, bctmp: 0.05, coat: 0.15 },
+    strong: { lc: 0.5, sc: 0.35, bctmp: 0.15, coat: 0.15 },
+    project: { lc: 0.45, sc: 0.4, bctmp: 0.15, coat: 0.15 },
+    tobacco2: { lc: 0.47, sc: 0.38, bctmp: 0.15, coat: 0.15 },
+    lwc: { lc: 0.35, sc: 0.55, bctmp: 0.1, coat: 0.09 },
+    satin: { lc: 0.35, sc: 0.55, bctmp: 0.1, coat: 0.09 },
+    medical: { lc: 0.4, sc: 0.6, bctmp: 0, coat: 0.015 },
+    offset: { lc: 0.45, sc: 0.55, bctmp: 0, coat: 0.015 },
+    bulk: { lc: 0.3, sc: 0.3, bctmp: 0.4, coat: 0.015 },
+    sc: { lc: 0.35, sc: 0.35, bctmp: 0.3, coat: 0.015 },
+  };
   const scenarios = [
     {
       id: "base",
@@ -1247,6 +1266,7 @@
     nodes,
     clients,
     segments,
+    recipes,
     scenarios,
     businessPlan,
     previousSop,
