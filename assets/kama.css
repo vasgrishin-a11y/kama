@@ -2879,6 +2879,12 @@ body.has-expanded-panel::before {
 .gantt-bar.dragging { cursor: grabbing; opacity: .85; }
 .gantt-bar.moved { stroke: #27364a; stroke-width: 2; stroke-dasharray: 4 2; }
 .gantt-bar.hl { stroke: #ed0084; stroke-width: 3; }
+/* Серая гамма завершённых кампаний и приглушение полос вне выбранной цепочки. */
+.gantt-bar.done { stroke: rgba(255, 255, 255, .55); }
+.gantt-bar.dim { opacity: .62; }
+.gantt-bar.rel { stroke: #04143a; stroke-width: 2.4; }
+.gantt-bar.focus { stroke: #04143a; stroke-width: 3.6; }
+.gantt-link.dim { opacity: .22; }
 .gantt-barlabel { fill: #fff; font-size: 11px; font-weight: 600; pointer-events: none; opacity: .95; }
 .gantt-empty { fill: #7b889c; font-size: 13px; font-weight: 600; }
 .gantt-legend { font-size: 11px; }
@@ -2886,8 +2892,14 @@ body.has-expanded-panel::before {
 .gantt-legend .gantt-hl-swatch { background: #fff !important; border: 2px solid #ed0084; height: 10px !important; border-radius: 3px !important; }
 .gantt-legend .gantt-link-swatch { background: #8fa2c9 !important; height: 2px !important; border-radius: 0 !important; }
 .gantt-legend .gantt-bad-swatch { background: #e02442 !important; height: 2px !important; border-radius: 0 !important; }
+.gantt-legend .gantt-done-swatch { background: #b9c2ce !important; height: 10px !important; border-radius: 3px !important; }
+.gantt-legend .gantt-focus-swatch { background: #fff !important; border: 2.4px solid #04143a; height: 10px !important; border-radius: 3px !important; }
 .dispatch-toolbar { flex-wrap: wrap; align-items: flex-start; }
 .dispatch-filter-row { display: flex; flex: 1 1 100%; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-width: 0; }
+.dispatch-group-switch button { font-weight: 700; }
+.dispatch-group-switch button[data-dispatch-group="carton"] { border-left: 4px solid #4769ff; }
+.dispatch-group-switch button[data-dispatch-group="paper"] { border-left: 4px solid #19a27b; }
+.dispatch-group-switch button[data-dispatch-group="all"] { border-left: 4px solid #8b5cf6; }
 .dispatch-unit-switch { align-items: center; }
 .dispatch-units-label { font-size: 9px; letter-spacing: .9px; color: var(--muted); font-weight: 700; }
 .dispatch-unit-switch button { min-height: 30px; padding: 6px 9px; font-size: 10px; font-variant-numeric: tabular-nums; }

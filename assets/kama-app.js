@@ -72,7 +72,9 @@
     cutPage = 0,
     registryStream = "mass",
     fiberType = "all",
-    dispatchUnits = new Set(), /* пусто = все переделы; иначе — выбранный набор */
+    dispatchUnits = new Set(), /* пусто = все агрегаты; иначе — выбранный набор */
+    dispatchFocus = null, /* кампания, выбранная мышью: подсвечивается её цепочка */
+    dispatchDimDone = true, /* завершённые кампании по умолчанию серые */
     dispatchLinks = true,
     dispatchCascade = true,
     dispatchMoves = new Map(),
@@ -1115,19 +1117,27 @@
      Графикование кампаний производства — диспетчерская на выбранный период.
      Гантт строится по плану кампаний раздела «Производство» (активная версия)
      и заказам раздела «Управление заказами». Период диаграммы берётся из
-     фильтров шапки (ПЕРИОД / С / ПО, год, направление); переделы можно выбирать
-     любым набором. Ручные сдвиги кампаний живут только в состоянии
+     фильтров шапки (ПЕРИОД / С / ПО, год, направление); агрегаты можно выбирать
+     любым набором или группами «Картон» / «Бумага». Клик по кампании
+     подсвечивает её цепочку переделов, остальные полосы приглушаются; завершённые
+     кампании по умолчанию серые. Ручные сдвиги кампаний живут только в состоянии
      диспетчерской (dispatchMoves) и не меняют данные остальных разделов.
      ───────────────────────────────────────────────────────────────────────── */
   const GANTT = { label: 230, row: 50, head: 88, bar: 30 };
   const GANTT_UNIT_ORDER = { "МП-1": 0, "МП-2": 1, "КДМ-9": 2, "БДМ-7": 3, "ПРС-1": 4, "ПРС-2": 5, "УП-1": 6 };
   const GANTT_UNITS = Object.keys(GANTT_UNIT_ORDER).sort((a, b) => GANTT_UNIT_ORDER[a] - GANTT_UNIT_ORDER[b]);
   const dispatchStageFilter = {
-    all: { label: "Все переделы", units: GANTT_UNITS },
     mass: { label: "Массоподготовка", units: ["МП-1", "МП-2"] },
     kdm: { label: "КДМ", units: ["КДМ-9"] },
     bdm: { label: "БДМ", units: ["БДМ-7"] },
     fin: { label: "Отделка", units: ["ПРС-1", "ПРС-2", "УП-1"] },
+  };
+  /* Быстрый выбор набора агрегатов: все или группа продукта. УП-1 упаковывает
+     оба направления, поэтому входит и в «Картон», и в «Бумагу». */
+  const dispatchUnitGroups = {
+    all: { label: "Все агрегаты", units: GANTT_UNITS },
+    carton: { label: "Картон", units: ["МП-1", "КДМ-9", "ПРС-1", "УП-1"] },
+    paper: { label: "Бумага", units: ["МП-2", "БДМ-7", "ПРС-2", "УП-1"] },
   };
   const ganttColor = (c) =>
     c.stage === "Массоподготовка" ? "#8b5cf6"
@@ -1156,16 +1166,48 @@
     }
     return { from, to, year, days, months, startUTC: Date.UTC(year, from, 1) };
   }
-  /* Выбранный набор переделов: пустое множество — все переделы. */
+  /* Выбранный набор агрегатов: пустое множество — все агрегаты. */
   const dispatchChosenUnits = () => (dispatchUnits.size ? new Set(dispatchUnits) : new Set(GANTT_UNITS));
   function dispatchPresetOf(set) {
-    if (set.size === GANTT_UNITS.length) return "all";
     for (const [id, def] of Object.entries(dispatchStageFilter)) {
-      if (id === "all" || def.units.length !== set.size) continue;
-      if (def.units.every((u) => set.has(u))) return id;
+      if (def.units.length === set.size && def.units.every((u) => set.has(u))) return id;
     }
     return "custom";
   }
+  function dispatchGroupOf(set) {
+    for (const [id, def] of Object.entries(dispatchUnitGroups)) {
+      if (def.units.length === set.size && def.units.every((u) => set.has(u))) return id;
+    }
+    return "custom";
+  }
+  /* Все связанные кампании выбранной: обход связей обеспеченности в обе
+     стороны (масса ↔ машина ↔ отделка) — это единая технологическая цепочка. */
+  function dispatchNeighborhood(start, links) {
+    const up = new Map(),
+      down = new Map();
+    for (const l of links) {
+      if (!down.has(l.from)) down.set(l.from, []);
+      down.get(l.from).push(l.to);
+      if (!up.has(l.to)) up.set(l.to, []);
+      up.get(l.to).push(l.from);
+    }
+    const seen = new Set([start]);
+    const queue = [start];
+    while (queue.length) {
+      const id = queue.shift();
+      for (const next of [...(down.get(id) || []), ...(up.get(id) || [])]) {
+        if (seen.has(next)) continue;
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+    return seen;
+  }
+  /* Завершённая кампания: факт прошлых месяцев или выполненная в текущем. */
+  const campaignDone = (c) => {
+    const status = campaignStatus(c, year);
+    return status.label === "Факт" || status.label === "Выполнена";
+  };
   let dispatchStructure = null,
     dispatchOrderIds = [],
     ganttDrag = null,
@@ -1201,15 +1243,15 @@
     const inWindow = (c) => c.month >= win.from && c.month <= win.to;
 
     /* Кампании года нужны для цепочек заказов: фильтр периода не должен
-       обнулять колонки «кампании переделов» в таблице заказов. */
+       обнулять колонки «кампании агрегатов» в таблице заказов. */
     const allById = new Map(operations.campaigns.map((c) => [c.id, c]));
     const windowCamps = operations.campaigns.filter((c) => inWindow(c) && inFamily(c));
     const byId = new Map(windowCamps.map((c) => [c.id, c]));
     const camps = windowCamps.filter((c) => chosen.has(c.machine));
 
     /* Связи обеспеченности между переделами: масса → машина → отделка.
-       Строятся по всем видимым переделам окна, даже если часть строк скрыта,
-       чтобы каскадный сдвиг не терял связанные кампании. */
+       Строятся по всем видимым агрегатам окна, даже если часть строк скрыта,
+       чтобы каскадный сдвиг и подсветка цепочки не теряли связанные кампании. */
     const links = [];
     for (const c of windowCamps) {
       if (c.stage === "Массоподготовка") {
@@ -1232,11 +1274,17 @@
       const base = which === "start" ? Math.floor(c.start / 24) : Math.ceil(c.end / 24);
       return (monthOffset.get(c.month) || 0) + base + move;
     };
+    const hourOf = (c, which) => {
+      const move = dispatchMoves.get(c.id) || 0;
+      return (monthOffset.get(c.month) || 0) * 24 + (which === "start" ? c.start : c.end) + move * 24;
+    };
     const dateAt = (dayIdx) => {
       const clamped = Math.max(0, Math.min(win.days - 1, dayIdx));
       const dt = new Date(win.startUTC + clamped * dayMs);
       return `${ganttPad(dt.getUTCDate())}.${ganttPad(dt.getUTCMonth() + 1)}`;
     };
+    /* Подсветка выбранной мышью кампании: её технологическая цепочка. */
+    const focusSet = dispatchFocus && allById.has(dispatchFocus) ? dispatchNeighborhood(dispatchFocus, links) : null;
 
     /* Заказы → цепочка кампаний по всем переделам (по всему году). */
     const plan = currentOrderPlan();
@@ -1259,7 +1307,13 @@
         ordersByCampaign.get(id).push(x.orderId);
       }
     }
-    dispatchOrderIds = plan.results.filter((x) => x.productionDate && x.campaign !== "Вне кампании SOP").map((x) => x.orderId);
+    /* В диспетчерской — только заказы, покрываемые исключительно производством:
+       ни склад регионального РЦ, ни запас завода, ни «производство + запас»
+       в таблицу не попадают. */
+    const productionOrders = plan.results.filter(
+      (x) => x.productionDate && x.stockStatus === "no" && orderChain(x).machine.length > 0,
+    );
+    dispatchOrderIds = productionOrders.map((x) => x.orderId);
     const highlight = new Set();
     for (const oid of dispatchOrders) {
       const x = plan.results.find((res) => res.orderId === oid);
@@ -1280,6 +1334,89 @@
     const violations = visibleLinks.filter((l) => l.gap < 0);
     const movedCount = windowCamps.filter((c) => dispatchMoves.has(c.id)).length;
     const preset = dispatchPresetOf(chosen);
+    const group = dispatchGroupOf(chosen);
+
+    /* ── Доступность мощностей: свободный фонд агрегатов после сдвигов ──
+       Занятость считается по фактическим интервалам полос (сдвиг учитывается),
+       фонд — по доступным часам месяца за вычетом плановых ремонтов. */
+    const monthSpans = win.months.map((mo) => ({ month: mo.month, from: mo.start * 24, to: (mo.start + mo.len) * 24 }));
+    const overlapHours = (a0, a1, b0, b1) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
+    const capacityHours = (machine, month) => {
+      const cap = operations.capacities.find((x) => x.machine === machine && x.month === month);
+      if (!cap) return new Date(Date.UTC(year, month + 1, 0)).getUTCDate() * 24;
+      return Math.max(0, cap.available);
+    };
+    const capacityRows = [];
+    const capacityProblems = [];
+    for (const unit of unitRows) {
+      const list = camps.filter((c) => c.machine === unit.machine);
+      const spans = list.map((c) => ({ c, s: hourOf(c, "start"), e: hourOf(c, "end") }));
+      let fund = 0,
+        used = 0;
+      for (const span of monthSpans) {
+        const cap = capacityHours(unit.machine, span.month);
+        let monthUsed = 0;
+        for (const x of spans) monthUsed += overlapHours(x.s, x.e, span.from, span.to);
+        fund += cap;
+        used += monthUsed;
+        const overload = monthUsed - cap;
+        if (overload > 0.5) {
+          capacityProblems.push({
+            kind: "overload",
+            unit: unit.machine,
+            time: ganttMonthLabel(span.month, year),
+            hours: overload,
+            problem: `перегрузка фонда на ${fmt(overload, 1)} ч (${fmt(monthUsed, 1)} из ${fmt(cap)} ч)`,
+            fix: `освободить ${fmt(overload, 1)} ч: перенести кампании в соседний месяц или сократить объём`,
+          });
+        }
+      }
+      /* Накладки ищем по фактическим часам и только там, где участвует
+         сдвинутая вручную кампания: базовая последовательность модели
+         перегрузом не считается, важны конфликты, созданные диспетчером. */
+      const ordered = [...spans].sort((a, b) => a.s - b.s);
+      for (let i = 1; i < ordered.length; i++) {
+        const prev = ordered[i - 1],
+          cur = ordered[i];
+        const overlap = prev.e - cur.s;
+        if (overlap <= 0.5) continue;
+        if (!dispatchMoves.has(prev.c.id) && !dispatchMoves.has(cur.c.id)) continue;
+        capacityProblems.push({
+          kind: "overlap",
+          unit: unit.machine,
+          time: dateAt(Math.floor(cur.s / 24)),
+          hours: overlap,
+          problem: `накладка ${prev.c.id} ↔ ${cur.c.id}: ${fmt(overlap, 1)} ч`,
+          fix: `сдвинуть ${cur.c.id} вправо минимум на ${Math.ceil(overlap / 24)} сут.`,
+        });
+      }
+      capacityRows.push({
+        unit,
+        campaigns: list.length,
+        fund,
+        used,
+        free: fund - used,
+        load: fund ? used / fund : 0,
+        moved: list.filter((c) => dispatchMoves.has(c.id)).length,
+      });
+    }
+    const overloads = capacityProblems.filter((p) => p.kind === "overload").length;
+    const overlaps = capacityProblems.filter((p) => p.kind === "overlap").length;
+    /* Переходы в выбранном периоде против цели бизнес-плана: коэффициент
+       переходов плана масштабируется к целевому коэффициенту БП. */
+    const setupHours = S(camps, "setup");
+    const planSetupCoef = Number(r.config?.setup ?? 1) || 1;
+    /* Цель — лучшая версия цикла: минимальный коэффициент переходов среди
+       версий и бизнес-плана. Для V5 это 0,72; для базовой версии виден запас. */
+    const cycleSetupCoefs = [M.businessPlan?.setup, ...M.scenarios.map((sc) => sc.setup)]
+      .map((v) => Number(v))
+      .filter((v) => Number.isFinite(v) && v > 0);
+    const targetSetupCoef = cycleSetupCoefs.length ? Math.min(...cycleSetupCoefs) : planSetupCoef;
+    const setupTargetHours = (setupHours / planSetupCoef) * targetSetupCoef;
+    const fundHours = capacityRows.reduce((sum, row) => sum + row.fund, 0);
+    const setupShare = fundHours ? setupHours / fundHours : 0;
+    const setupTargetShare = fundHours ? setupTargetHours / fundHours : 0;
+    const setupOverTarget = setupHours > setupTargetHours + 0.05;
 
     /* ── Диаграмма Ганта (SVG, гранулярность суток) ── */
     const day = ganttDayWidth(win.days);
@@ -1294,7 +1431,7 @@
     const windowKey = `${active}-${year}-${win.from}-${win.to}-${family}`;
     const rowY = new Map();
     unitRows.forEach((u, i) => rowY.set(u.machine, GANTT.head + i * GANTT.row));
-    let svg = `<svg class="chart gantt-svg" width="${width}" height="${height}" data-w="${width}" data-h="${height}" data-day="${day}" data-row="${GANTT.row}" data-bar="${GANTT.bar}" data-label="0" data-days="${win.days}" data-today-x="${todayX}" data-window="${esc(windowKey)}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Диаграмма Ганта: кампании переделов, ${esc(periodLabel)}"><title>Графикование кампаний производства · ${esc(periodLabel)} · гранулярность суток</title>`;
+    let svg = `<svg class="chart gantt-svg" width="${width}" height="${height}" data-w="${width}" data-h="${height}" data-day="${day}" data-row="${GANTT.row}" data-bar="${GANTT.bar}" data-label="0" data-days="${win.days}" data-today-x="${todayX}" data-window="${esc(windowKey)}" data-focus="${esc(dispatchFocus || "")}" role="img" aria-label="Диаграмма Ганта: кампании агрегатов, ${esc(periodLabel)}"><title>Графикование кампаний производства · ${esc(periodLabel)} · гранулярность суток</title>`;
     svg += `<defs><marker id="gantt-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" fill="#8fa2c9"/></marker><marker id="gantt-arrow-bad" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" fill="#e02442"/></marker></defs>`;
     /* Строки агрегатов. */
     unitRows.forEach((unit, ri) => {
@@ -1336,11 +1473,13 @@
         const f = anchor(l.from), t = anchor(l.to);
         if (!f || !t) continue;
         const bad = l.gap < 0;
+        const dim = focusSet && !(focusSet.has(l.from.id) && focusSet.has(l.to.id));
         const bend = Math.max(14, (t.x0 - f.x1) / 2);
-        svg += `<path class="gantt-link${bad ? " bad" : ""}" marker-end="url(#gantt-arrow${bad ? "-bad" : ""})" d="M${f.x1},${f.y} C${f.x1 + bend},${f.y} ${t.x0 - bend},${t.y} ${t.x0},${t.y}"><title>${esc(l.from.id)} → ${esc(l.to.id)}${bad ? ` · нарушение: старт раньше обеспечивающей кампании на ${-l.gap} сут.` : ""}</title></path>`;
+        svg += `<path class="gantt-link${bad ? " bad" : ""}${dim ? " dim" : ""}" marker-end="url(#gantt-arrow${bad ? "-bad" : ""})" d="M${f.x1},${f.y} C${f.x1 + bend},${f.y} ${t.x0 - bend},${t.y} ${t.x0},${t.y}"><title>${esc(l.from.id)} → ${esc(l.to.id)}${bad ? ` · нарушение: старт раньше обеспечивающей кампании на ${-l.gap} сут.` : ""}</title></path>`;
       }
     }
-    /* Полосы кампаний: перетаскивание мышью, подсветка заказов, сдвиги. */
+    /* Полосы кампаний: перетаскивание мышью, подсветка заказов и цепочек,
+       серый цвет завершённых, ручные сдвиги. */
     for (const c of camps) {
       const y = rowY.get(c.machine);
       if (y === undefined) continue;
@@ -1350,12 +1489,24 @@
       const bx = xOf(d0), bw = Math.max(4, (d1 - d0) * day - 2);
       const by = y + (GANTT.row - GANTT.bar) / 2;
       const moved = dispatchMoves.has(c.id);
-      const cls = ["gantt-bar", moved ? "moved" : "", highlight.has(c.id) ? "hl" : ""].filter(Boolean).join(" ");
+      const done = campaignDone(c);
+      const inChain = !focusSet || focusSet.has(c.id);
+      const dimmed = Boolean(focusSet) && !inChain;
+      const greyed = focusSet ? dimmed : dispatchDimDone && done;
+      const cls = [
+        "gantt-bar",
+        moved ? "moved" : "",
+        done ? "done" : "",
+        highlight.has(c.id) ? "hl" : "",
+        dimmed ? "dim" : "",
+        dispatchFocus === c.id ? "focus" : inChain && focusSet ? "rel" : "",
+      ].filter(Boolean).join(" ");
       const st = campaignStatus(c, year);
       const ordersOf = ordersByCampaign.get(c.id) || [];
       const moveText = moved ? ` · сдвинута вручную на ${dispatchMoves.get(c.id) > 0 ? "+" : ""}${dispatchMoves.get(c.id)} сут.` : "";
-      const title = `${c.id} · ${c.name} · ${(c.products || [c.product]).map((pid) => product(pid).name).join(", ")} · ${(c.grams || [c.gram]).join(", ")} г/м² · выпуск ${fmt(c.good)} т · ${dateAt(d0)}–${dateAt(Math.max(d0, d1 - 1))} · ${st.label}${ordersOf.length ? ` · заказы: ${ordersOf.join(", ")}` : ""}${moveText}`;
-      svg += `<rect class="${cls}" data-gantt-key="${esc(c.id)}" x="${bx}" y="${by}" width="${bw}" height="${GANTT.bar}" rx="4" fill="${ganttColor(c)}"><title>${esc(title)}</title></rect>`;
+      const focusText = !focusSet ? "" : dispatchFocus === c.id ? " · выбрана: подсвечена вся цепочка" : inChain ? " · в цепочке выбранной кампании" : " · вне цепочки выбранной кампании";
+      const title = `${c.id} · ${c.name} · ${(c.products || [c.product]).map((pid) => product(pid).name).join(", ")} · ${(c.grams || [c.gram]).join(", ")} г/м² · выпуск ${fmt(c.good)} т · ${dateAt(d0)}–${dateAt(Math.max(d0, d1 - 1))} · ${st.label}${done ? " (завершена)" : ""}${ordersOf.length ? ` · заказы: ${ordersOf.join(", ")}` : ""}${moveText}${focusText}`;
+      svg += `<rect class="${cls}" data-gantt-key="${esc(c.id)}" data-done="${done ? "1" : "0"}" x="${bx}" y="${by}" width="${bw}" height="${GANTT.bar}" rx="4" fill="${greyed ? (dimmed ? "#cfd6e1" : "#b9c2ce") : ganttColor(c)}"><title>${esc(title)}</title></rect>`;
       const shortId = c.stage === "Отделка" ? c.id.slice(c.machine.length + 1).replace(/^\d{4}-\d{1,2}-/, "") : c.id.replace(/^\d{4}-\d{1,2}-/, "");
       if (bw >= shortId.length * 6 + 10) svg += `<text class="gantt-barlabel" x="${bx + 6}" y="${by + GANTT.bar / 2 + 4}">${esc(shortId)}</text>`;
     }
@@ -1364,26 +1515,58 @@
     }
     svg += `</svg>`;
 
-    /* Подписи переделов — отдельная неподвижная колонка: при горизонтальной
+    /* Подписи агрегатов — отдельная неподвижная колонка: при горизонтальной
        прокрутке длинного Ганта строки всегда остаются подписанными. */
-    const labels = `<div class="gantt-labels"><div class="gantt-labels-head"><span>ПЕРЕДЕЛ</span></div>${unitRows.map((unit, ri) => `<div class="gantt-rowlabel${ri % 2 ? " alt" : ""}" data-gantt-unit="${esc(unit.machine)}" title="${esc(unit.name)}">${esc(unit.name)}</div>`).join("")}</div>`;
+    const labels = `<div class="gantt-labels"><div class="gantt-labels-head"><span>АГРЕГАТ</span></div>${unitRows.map((unit, ri) => `<div class="gantt-rowlabel${ri % 2 ? " alt" : ""}" data-gantt-unit="${esc(unit.machine)}" title="${esc(unit.name)}">${esc(unit.name)}</div>`).join("")}</div>`;
     const selectedLabel = chosen.size === GANTT_UNITS.length
-      ? "все переделы"
+      ? "все агрегаты"
       : `${chosen.size} из ${GANTT_UNITS.length} · ${GANTT_UNITS.filter((u) => chosen.has(u)).join(", ")}`;
-    const toolbar = `<div class="chart-toolbar dispatch-toolbar"><div class="dispatch-filter-row"><div class="flow-switch" role="group" aria-label="Группы переделов на диаграмме Ганта">${Object.entries(dispatchStageFilter).map(([id, s]) => `<button type="button" data-dispatch-stage="${id}" aria-pressed="${preset === id}">${s.label}</button>`).join("")}</div><div class="flow-switch dispatch-unit-switch" role="group" aria-label="Любой набор переделов на диаграмме Ганта" title="Включите любое сочетание переделов — не только один или все"><span class="dispatch-units-label">ПЕРЕДЕЛЫ</span>${GANTT_UNITS.map((u) => `<button type="button" data-dispatch-unit="${u}" aria-pressed="${chosen.has(u)}" title="Показать / скрыть передел ${u}">${u}</button>`).join("")}</div></div><div class="flow-switch" role="group" aria-label="Инструменты диспетчерской"><button type="button" data-dispatch-links aria-pressed="${dispatchLinks}" title="Линии снабжения: масса → машина → отделка">Связи между переделами</button><button type="button" data-dispatch-cascade aria-pressed="${dispatchCascade}" title="Перетаскивание кампании сдвигает связанные кампании следующих переделов тем же сдвигом">Двигать связанные вместе</button><button type="button" class="dispatch-reset" data-dispatch-reset ${movedCount ? "" : "disabled"}>Сбросить сдвиги${movedCount ? ` (${movedCount})` : ""}</button></div><span class="chart-context">показано ${selectedLabel} · перетаскивайте кампании мышью · сдвиги локальные, данные других разделов не меняются</span></div>`;
-    const legend = `<div class="flow-legend gantt-legend"><span><i style="background:#8b5cf6"></i>Массоподготовка</span><span><i style="background:#4769ff"></i>КДМ-9</span><span><i style="background:#19a27b"></i>БДМ-7</span><span><i style="background:#ff8c00"></i>Отделка</span><span><i class="gantt-moved-swatch"></i>сдвинута вручную</span><span><i class="gantt-hl-swatch"></i>кампании выбранных заказов</span><span><i class="gantt-link-swatch"></i>связь обеспеченности</span><span><i class="gantt-bad-swatch"></i>нарушение последовательности</span></div>`;
+    const groupTitle = {
+      all: "Показать все агрегаты",
+      carton: "Только агрегаты направления «Картон»: МП-1, КДМ-9, ПРС-1, УП-1",
+      paper: "Только агрегаты направления «Бумага»: МП-2, БДМ-7, ПРС-2, УП-1",
+    };
+    const focusLabel = focusSet
+      ? `выбрана ${dispatchFocus} · в цепочке ${focusSet.size} ${plural(focusSet.size, "кампания", "кампании", "кампаний")} · остальные полосы серые`
+      : `показано ${selectedLabel} · клик по кампании подсвечивает её цепочку · перетаскивайте кампании мышью`;
+    const toolbar = `<div class="chart-toolbar dispatch-toolbar"><div class="dispatch-filter-row"><div class="flow-switch dispatch-group-switch" role="group" aria-label="Набор агрегатов по продукту">${Object.entries(dispatchUnitGroups).map(([id, g]) => `<button type="button" data-dispatch-group="${id}" aria-pressed="${group === id}" title="${groupTitle[id]}">${g.label}</button>`).join("")}</div><div class="flow-switch" role="group" aria-label="Группы переделов на диаграмме Ганта">${Object.entries(dispatchStageFilter).map(([id, s]) => `<button type="button" data-dispatch-stage="${id}" aria-pressed="${preset === id}">${s.label}</button>`).join("")}</div><div class="flow-switch dispatch-unit-switch" role="group" aria-label="Любой набор агрегатов на диаграмме Ганта" title="Включите любое сочетание агрегатов — не только один или все"><span class="dispatch-units-label">АГРЕГАТЫ</span>${GANTT_UNITS.map((u) => `<button type="button" data-dispatch-unit="${u}" aria-pressed="${chosen.has(u)}" title="Показать / скрыть агрегат ${u}">${u}</button>`).join("")}</div></div><div class="flow-switch" role="group" aria-label="Инструменты диспетчерской"><button type="button" data-dispatch-dim-done aria-pressed="${dispatchDimDone}" title="Завершённые кампании показываются серым; отожмите кнопку, чтобы вернуть цвет">⏹ Завершённые серым</button><button type="button" data-dispatch-links aria-pressed="${dispatchLinks}" title="Линии снабжения: масса → машина → отделка">Связи между переделами</button><button type="button" data-dispatch-cascade aria-pressed="${dispatchCascade}" title="Перетаскивание кампании сдвигает связанные кампании следующих переделов тем же сдвигом">Двигать связанные вместе</button>${focusSet ? `<button type="button" data-dispatch-clear-focus>Снять выделение</button>` : ""}<button type="button" class="dispatch-reset" data-dispatch-reset ${movedCount ? "" : "disabled"}>Сбросить сдвиги${movedCount ? ` (${movedCount})` : ""}</button></div><span class="chart-context">${focusLabel}</span></div>`;
+    const legend = `<div class="flow-legend gantt-legend"><span><i style="background:#8b5cf6"></i>Массоподготовка</span><span><i style="background:#4769ff"></i>КДМ-9</span><span><i style="background:#19a27b"></i>БДМ-7</span><span><i style="background:#ff8c00"></i>Отделка</span><span><i class="gantt-done-swatch"></i>завершённые (серым)</span><span><i class="gantt-focus-swatch"></i>выбранная кампания и её цепочка</span><span><i class="gantt-moved-swatch"></i>сдвинута вручную</span><span><i class="gantt-hl-swatch"></i>кампании выбранных заказов</span><span><i class="gantt-link-swatch"></i>связь обеспеченности</span><span><i class="gantt-bad-swatch"></i>нарушение последовательности</span></div>`;
 
     const violationsBody = violations.length
       ? `<p class="panel-note">Красные связи — кампания следующего передела стартует раньше обеспечивающей кампании предыдущего (масса → машина → отделка). Передвиньте полосы так, чтобы связи стали серыми, или сбросьте сдвиги.</p>${table(["Связь", "Обеспечивающая кампания", "Зависимая кампания", "Старт раньше на, сут.", "Как исправить"], violations.map((v) => [v.kind === "mass" ? "Масса → машина" : "Машина → отделка", v.from.id, v.to.id, `<span class="delta-neg">${-v.gap}</span>`, `сдвинуть ${v.to.id} вправо на ${-v.gap} сут. или ${v.from.id} влево`]))}`
       : '<p class="muted">Нарушений нет: каждая кампания машины стартует не раньше обеспечивающей кампании массы, отделка — не раньше своей кампании машины.</p>';
 
-    const orderRows = plan.results.map((x) => {
+    const capacityNote = capacityProblems.length
+      ? `<p class="panel-note">Проверка учитывает ручные сдвиги: занятость агрегата считается по фактическим интервалам полос на Ганте, фонд — по доступным часам месяца за вычетом плановых ремонтов. Перегрузка — кампаний больше, чем фонд; накладка — две кампании одновременно на одном агрегате.</p>`
+      : '<p class="muted">Свободное место есть: ни один агрегат не перегружен, кампании не накладываются друг на друга в выбранном периоде.</p>';
+    const capacityProblemsTable = capacityProblems.length
+      ? table(
+          ["Проверка", "Агрегат", "Период", "Проблема", "Как исправить"],
+          capacityProblems.map((p) => [
+            p.kind === "overload" ? '<span class="pill red">Перегрузка фонда</span>' : '<span class="pill warn">Накладка кампаний</span>',
+            esc(p.unit),
+            esc(p.time),
+            `<span class="delta-neg">${esc(p.problem)}</span>`,
+            esc(p.fix),
+          ]),
+        )
+      : "";
+    const capacitySummary = table(
+      ["Агрегат", "Кампаний", "Фонд за период, ч", "Занято, ч", "Свободно, ч", "Загрузка", "Сдвинуто"],
+      capacityRows.map((row) => [
+        esc(row.unit.name),
+        fmt(row.campaigns),
+        fmt(row.fund),
+        fmt(row.used, 1),
+        `<span class="${row.free < -0.5 ? "delta-neg" : "delta-pos"}">${fmt(row.free, 1)}</span>`,
+        pct(row.load),
+        row.moved ? fmt(row.moved) : "—",
+      ]),
+    );
+
+    const orderRows = productionOrders.map((x) => {
       const ch = orderChain(x);
-      const coverage = x.shipped
-        ? '<span class="pill shipped">Отгружено</span>'
-        : x.productionDate
-          ? '<span class="pill">Через производство</span>'
-          : '<span class="pill">Из запаса</span>';
+      const coverage = `<span class="pill shipped">Только производство</span><small>${esc(x.sourceKind)}</small>`;
       return [
         `<input type="checkbox" data-dispatch-order="${x.orderId}" aria-label="Подсветить заказ ${x.orderId} на диаграмме Ганта" ${dispatchOrders.has(x.orderId) ? "checked" : ""}>`,
         `<b>${x.orderId}</b><small>${esc(x.customer)}</small>`,
@@ -1391,18 +1574,19 @@
         fmt(x.qty),
         orderDate(x.requestedDate),
         coverage,
-        x.productionDate ? `${orderDate(x.productionDate)}<small>${esc(x.machine)}</small>` : "—",
+        `${orderDate(x.productionDate)}<small>${esc(x.machine)}</small>`,
         ch.mass.length ? ch.mass.join(", ") : "—",
-        ch.machine.length ? ch.machine.join(", ") : x.campaign === "Вне кампании SOP" ? '<span class="pill red">Вне кампании SOP</span>' : "—",
+        ch.machine.length ? ch.machine.join(", ") : "—",
         ch.fin.length ? ch.fin.join(", ") : "—",
       ];
     });
-    const ordersToolbar = `<div class="chart-toolbar"><div class="flow-switch" role="group" aria-label="Подсветка заказов на диаграмме"><button type="button" data-dispatch-order-all="prod">Выделить все с производством (${dispatchOrderIds.length})</button><button type="button" data-dispatch-order-all="clear">Снять выделение</button></div><span class="chart-context">${dispatchOrders.size ? `выбрано ${dispatchOrders.size} ${plural(dispatchOrders.size, "заказ", "заказа", "заказов")} · подсвечено ${highlight.size} ${plural(highlight.size, "кампания", "кампании", "кампаний")} на Ганте` : "выберите заказ — его кампании подсветятся во всех переделах"}</span></div>`;
+    const ordersToolbar = `<div class="chart-toolbar"><div class="flow-switch" role="group" aria-label="Подсветка заказов на диаграмме"><button type="button" data-dispatch-order-all="prod">Выделить все из производства (${dispatchOrderIds.length})</button><button type="button" data-dispatch-order-all="clear">Снять выделение</button></div><span class="chart-context">${dispatchOrders.size ? `выбрано ${dispatchOrders.size} ${plural(dispatchOrders.size, "заказ", "заказа", "заказов")} · подсвечено ${highlight.size} ${plural(highlight.size, "кампания", "кампании", "кампаний")} на Ганте` : "выберите заказ — его кампании подсветятся во всех переделах"}</span></div>`;
 
-    return `<div class="kpis kpis-4">${kpi("Кампаний в окне", fmt(camps.length), "", `${periodLabel} · ${selectedLabel}`, true)}${kpi("Заказов в диспетчерской", fmt(plan.results.length), "", `${dispatchOrderIds.length} через производство · ATP на ${orderDate(O.AS_OF)}`)}${kpi("Сдвинуто вручную", fmt(movedCount), "кампаний", dispatchCascade ? "каскад связанных включён" : "только выбранная кампания", movedCount ? "accent" : "")}${kpi("Нарушений последовательности", fmt(violations.length), "связей", violations.length ? "есть накладки между переделами" : "обеспеченность соблюдена", violations.length ? "alert" : "")}</div>
-      ${panel("Диаграмма Ганта · кампании по переделам", `${periodLabel} · ${chosen.size === GANTT_UNITS.length ? "все переделы" : GANTT_UNITS.filter((u) => chosen.has(u)).join(", ")} · гранулярность суток · связи масса → КДМ/БДМ → отделка`, `${toolbar}<div class="gantt-wrap" style="--gantt-head:${GANTT.head}px;--gantt-row:${GANTT.row}px;--gantt-label:${GANTT.label}px">${labels}<div class="chart-scroll gantt-scroll">${svg}</div></div>${legend}`, "dispatch-gantt-panel")}
+    return `<div class="kpis kpis-6">${kpi("Кампаний в окне", fmt(camps.length), "", `${periodLabel} · ${selectedLabel}`, true)}${kpi("Заказов из производства", fmt(productionOrders.length), "", `${fmt(S(productionOrders, "qty"))} т · ATP на ${orderDate(O.AS_OF)}`)}${kpi("Переходы в периоде", fmt(setupHours, 1), "ч", `цель ≤ ${fmt(setupTargetHours, 1)} ч · ${setupOverTarget ? `<span class="delta-neg">превышение ${fmt(setupHours - setupTargetHours, 1)} ч</span>` : `<span class="delta-pos">остаток ${fmt(setupTargetHours - setupHours, 1)} ч</span>`} · лучшая версия цикла, коэф. ${fmt(targetSetupCoef, 2)} · план ${fmt(planSetupCoef, 2)}`, setupOverTarget ? "alert" : "accent")}${kpi("Доля переходов в фонде", pct(setupShare), "", `цель ≤ ${pct(setupTargetShare)} · фонд ${fmt(fundHours)} ч · ${setupShare > setupTargetShare ? `<span class="delta-neg">+${fmt((setupShare - setupTargetShare) * 100, 2)} п.п.</span>` : `<span class="delta-pos">${fmt((setupTargetShare - setupShare) * 100, 2)} п.п. в запасе</span>`}`, setupShare > setupTargetShare + 1e-6 ? "alert" : "")}${kpi("Нарушений последовательности", fmt(violations.length), "связей", violations.length ? "есть накладки между переделами" : "обеспеченность соблюдена", violations.length ? "alert" : "")}${kpi("Перегрузки мощностей", fmt(capacityProblems.length), "проблем", `${overloads} перегрузок фонда · ${overlaps} накладок кампаний`, capacityProblems.length ? "alert" : "")}</div>
+      ${panel("Диаграмма Ганта · кампании по агрегатам", `${periodLabel} · ${chosen.size === GANTT_UNITS.length ? "все агрегаты" : GANTT_UNITS.filter((u) => chosen.has(u)).join(", ")} · гранулярность суток · связи масса → КДМ/БДМ → отделка`, `${toolbar}<div class="gantt-wrap" style="--gantt-head:${GANTT.head}px;--gantt-row:${GANTT.row}px;--gantt-label:${GANTT.label}px">${labels}<div class="chart-scroll gantt-scroll">${svg}</div></div>${legend}`, "dispatch-gantt-panel")}
       ${panel("Последовательность между переделами", "Проверка обеспеченности после ручных сдвигов", violationsBody, "dispatch-violations-panel")}
-      ${panel("Заказы и их кампании", "Заказы цикла 2026 · в каких кампаниях переделов они запланированы", `${ordersToolbar}${paged("dispatch-orders", ["Выбор", "Заказ / клиент", "Продукт", "Кол-во, т", "Требуемая дата", "Покрытие", "Дата производства", "Кампании массоподготовки", "Кампании КДМ / БДМ", "Кампании отделки"], orderRows)}`, "dispatch-orders-panel")}`;
+      ${panel("Доступность мощностей", `${periodLabel} · свободный фонд и накладки после ручных сдвигов`, `${capacityNote}${capacityProblemsTable}${capacitySummary}`, "dispatch-capacity-panel")}
+      ${panel("Заказы из производства и их кампании", "Только заказы, покрываемые производством (не запасом) · в каких кампаниях агрегатов они запланированы", `${ordersToolbar}${paged("dispatch-orders", ["Выбор", "Заказ / клиент", "Продукт", "Кол-во, т", "Требуемая дата", "Покрытие", "Дата производства", "Кампании массоподготовки", "Кампании КДМ / БДМ", "Кампании отделки"], orderRows)}`, "dispatch-orders-panel")}`;
   }
 
   function heat(r, operations = unitOperations(r)) {
@@ -3133,20 +3317,39 @@
     }));
     document.querySelectorAll("[data-dispatch-stage]").forEach((btn) => (btn.onclick = () => {
       const def = dispatchStageFilter[btn.dataset.dispatchStage];
-      dispatchUnits = def && btn.dataset.dispatchStage !== "all" ? new Set(def.units) : new Set();
+      dispatchUnits = def ? new Set(def.units) : new Set();
       render();
     }));
-    /* Любой набор переделов: каждая кнопка включает / выключает один передел. */
+    /* Быстрый выбор набора агрегатов: все либо группа продукта «Картон» / «Бумага». */
+    document.querySelectorAll("[data-dispatch-group]").forEach((btn) => (btn.onclick = () => {
+      const def = dispatchUnitGroups[btn.dataset.dispatchGroup];
+      if (!def) return;
+      const current = dispatchChosenUnits();
+      const same = def.units.length === current.size && def.units.every((u) => current.has(u));
+      dispatchUnits = same ? new Set() : new Set(def.units);
+      render();
+    }));
+    /* Любой набор агрегатов: каждая кнопка включает / выключает один агрегат. */
     document.querySelectorAll("[data-dispatch-unit]").forEach((btn) => (btn.onclick = () => {
       const id = btn.dataset.dispatchUnit;
       const next = dispatchChosenUnits();
       if (next.has(id)) {
-        if (next.size === 1) return; /* хотя бы один передел остаётся на диаграмме */
+        if (next.size === 1) return; /* хотя бы один агрегат остаётся на диаграмме */
         next.delete(id);
       } else next.add(id);
       dispatchUnits = next.size === GANTT_UNITS.length ? new Set() : next;
       render();
     }));
+    /* Завершённые кампании серым: по умолчанию включено. */
+    document.querySelectorAll("[data-dispatch-dim-done]").forEach((btn) => (btn.onclick = () => {
+      dispatchDimDone = !dispatchDimDone;
+      render();
+    }));
+    const clearFocus = document.querySelector("[data-dispatch-clear-focus]");
+    if (clearFocus) clearFocus.onclick = () => {
+      dispatchFocus = null;
+      render();
+    };
     document.querySelectorAll("[data-dispatch-links]").forEach((btn) => (btn.onclick = () => {
       dispatchLinks = !dispatchLinks;
       render();
@@ -3171,18 +3374,34 @@
     }));
     /* Перетаскивание кампаний на диаграмме Ганта: полосы двигаются «вживую»,
        сдвиг фиксируется в локальном состоянии диспетчерской на mouseup. */
-    document.querySelectorAll(".gantt-bar").forEach((bar) => (bar.onmousedown = (e) => {
-      if (e.button !== 0) return;
-      e.preventDefault();
-      ganttDrag = {
-        key: bar.dataset.ganttKey,
-        bar,
-        startX: e.clientX,
-        origX: Number(bar.getAttribute("x")),
-        delta: 0,
+    document.querySelectorAll(".gantt-bar").forEach((bar) => {
+      bar.onmousedown = (e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        ganttDrag = {
+          key: bar.dataset.ganttKey,
+          bar,
+          startX: e.clientX,
+          origX: Number(bar.getAttribute("x")),
+          delta: 0,
+        };
+        bar.classList.add("dragging");
       };
-      bar.classList.add("dragging");
-    }));
+      /* Клик без сдвига выбирает кампанию: подсвечивается вся её цепочка,
+         остальные полосы становятся серыми. Повторный клик снимает выбор. */
+      bar.onclick = (e) => {
+        e.stopPropagation();
+        const key = bar.dataset.ganttKey;
+        dispatchFocus = dispatchFocus === key ? null : key;
+        render();
+      };
+    });
+    const ganttSvg = document.querySelector(".gantt-svg");
+    if (ganttSvg) ganttSvg.onclick = (e) => {
+      if (e.target.closest(".gantt-bar") || !dispatchFocus) return;
+      dispatchFocus = null;
+      render();
+    };
     if (!ganttDocWired) {
       ganttDocWired = true;
       document.addEventListener("mousemove", (e) => {
@@ -3205,10 +3424,12 @@
       });
       document.addEventListener("mouseup", () => {
         if (!ganttDrag) return;
-        const { key, delta } = ganttDrag;
+        const { key, delta, bar } = ganttDrag;
         ganttDrag = null;
+        bar.classList.remove("dragging");
+        if (!delta) return; /* клик без сдвига обрабатывает onclick полосы */
         ganttDragEndedAt = Date.now();
-        if (delta) commitDispatchMove(key, delta);
+        commitDispatchMove(key, delta);
         render();
       });
     }
