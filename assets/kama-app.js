@@ -69,6 +69,7 @@
     obsoleteMode = "value",
     cutMachine = "all",
     cutPage = 0,
+    registryStream = "mass",
     segmentReviewOnly = false,
     segmentOff = new Set(),
     resourceModes = { fiber: "volume", coat: "volume", energy: "volume", water: "volume" },
@@ -1343,6 +1344,134 @@
     return `<div class="cutting-plan"><div class="chart-toolbar"><div class="flow-switch" role="group" aria-label="Фильтр карт раскроя по машине">${[["all", "Все машины"], ["КДМ-9", "КДМ-9 → ПРС-1"], ["БДМ-7", "БДМ-7 → ПРС-2"]].map(([id, label]) => `<button type="button" data-cut-machine="${id}" aria-pressed="${cutMachine === id}">${label}</button>`).join("")}</div><span class="chart-context">${campaigns.length} ${plural(campaigns.length, "кампания", "кампании", "кампаний")} · ${schemeCount} ${plural(schemeCount, "схема", "схемы", "схем")} · ${cuts.length} ${plural(cuts.length, "партия", "партии", "партий")} раскроя</span></div><h3>План раскроя по каждой кампании</h3>${cards || '<p class="muted">Для выбранного фильтра карт раскроя нет.</p>'}<div class="pager"><button class="button" type="button" data-cut-page="-1" ${cutPage === 0 ? "disabled" : ""}>← Предыдущие кампании</button><span>${cutPage + 1} / ${pageCount}</span><button class="button" type="button" data-cut-page="1" ${cutPage >= pageCount - 1 ? "disabled" : ""}>Следующие кампании →</button></div></div>`;
   }
 
+  /* Campaign registry across all four production streams: mass preparation,
+     KDM, BDM and finishing. Buttons switch the stream (mass prep by default);
+     every stream shows the campaigns of its stage for the selected period and
+     the columns that stage actually carries (recipe and fibre for mass prep,
+     gross/trim for the paper machines, source unit and good output for
+     finishing). */
+  const registryStreams = {
+    mass: {
+      label: "1 · Массоподготовка",
+      note: "МП-1 / МП-2 · масса по рецептуре волокна, снабжает КДМ-9 и БДМ-7",
+    },
+    kdm: { label: "2 · КДМ", note: "КДМ-9 · картон" },
+    bdm: { label: "3 · БДМ", note: "БДМ-7 · бумага" },
+    fin: {
+      label: "4 · Отделка",
+      note: "ПРС-1 / ПРС-2 / УП-1 · резка, перемотка, упаковка",
+    },
+  };
+  function campaignRegistry(operations) {
+    const inPeriod = (c) =>
+      c.month >= fromMonth &&
+      c.month <= toMonth &&
+      (family === "all" || product(c.product).family === family);
+    const all = operations.campaigns.filter(inPeriod);
+    const byStream = {
+      mass: all.filter((c) => c.stage === "Массоподготовка"),
+      kdm: all.filter((c) => c.machine === "КДМ-9"),
+      bdm: all.filter((c) => c.machine === "БДМ-7"),
+      fin: all.filter((c) => c.stage === "Отделка"),
+    };
+    const monthLabel = (c) => `${M.months[c.month]} ${year}`;
+    const hours = (c) => [
+      fmt(c.start, 1),
+      fmt(c.end, 1),
+      fmt(c.setup, 1),
+      fmt(c.run, 1),
+    ];
+    const timeHead = ["Начало, ч", "Конец, ч", "Переход, ч", "Работа, ч"];
+    const machineTable = {
+      headers: [
+        "Кампания",
+        "Месяц",
+        "Машина",
+        "Продукт",
+        "г/м²",
+        ...timeHead,
+        "Брутто, т",
+        "Годный, т",
+        "Обрезь, т",
+      ],
+      rows: byStream[registryStream].map((c) => [
+        c.id,
+        monthLabel(c),
+        c.machine,
+        product(c.product).name,
+        c.gram,
+        ...hours(c),
+        fmt(c.gross),
+        fmt(c.good),
+        fmt(c.trim, 1),
+      ]),
+    };
+    const tables = {
+      mass: {
+        headers: [
+          "Кампания",
+          "Месяц",
+          "Агрегат",
+          "Продукт",
+          "г/м²",
+          "Рецепт массы: ЛЦ / ХЦ / BCTMP",
+          "Мелование",
+          "Волокно, т абс. сух.",
+          "Масса на машину, т",
+          "Снабжает",
+          ...timeHead,
+        ],
+        rows: byStream.mass.map((c) => [
+          c.id,
+          monthLabel(c),
+          c.machine,
+          product(c.product).name,
+          c.gram,
+          c.recipe
+            ? `${pct(c.recipe.lc)} / ${pct(c.recipe.sc)} / ${pct(c.recipe.bctmp || 0)}`
+            : "—",
+          c.recipe ? pct(c.recipe.coat) : "—",
+          fmt(c.fiber, 1),
+          fmt(c.gross),
+          c.supplies,
+          ...hours(c),
+        ]),
+      },
+      kdm: machineTable,
+      bdm: machineTable,
+      fin: {
+        headers: [
+          "Кампания",
+          "Месяц",
+          "Агрегат",
+          "Продукт",
+          "г/м²",
+          "Источник",
+          ...timeHead,
+          "Годный, т",
+        ],
+        rows: byStream.fin.map((c) => [
+          c.id,
+          monthLabel(c),
+          c.machine,
+          product(c.product).name,
+          c.gram,
+          c.supplies,
+          ...hours(c),
+          fmt(c.good),
+        ]),
+      },
+    };
+    const table = tables[registryStream] || tables.mass;
+    const buttons = Object.entries(registryStreams)
+      .map(
+        ([id, s]) =>
+          `<button type="button" data-registry-stream="${id}" aria-pressed="${registryStream === id}">${s.label} (${byStream[id].length})</button>`,
+      )
+      .join("");
+    return `<div class="chart-toolbar"><div class="flow-switch" role="group" aria-label="Поток реестра производственных кампаний">${buttons}</div><span class="chart-context">${registryStreams[registryStream].note}</span></div>${paged(`campaigns-${registryStream}`, table.headers, table.rows)}`;
+  }
+
   function productionView(r, t) {
     const operations = unitOperations(r);
     const camps = r.campaigns.filter(eligible),
@@ -1455,34 +1584,8 @@
       )}
       ${panel(
         "Реестр производственных кампаний",
-        "Начало и конец — часы от начала месяца",
-        paged(
-          "campaigns",
-          [
-            "Кампания",
-            "Месяц",
-            "Машина",
-            "Продукт",
-            "г/м²",
-            "Начало, ч",
-            "Конец, ч",
-            "Переход, ч",
-            "Брутто, т",
-            "Годный, т",
-          ],
-          camps.map((c) => [
-            c.id,
-            `${M.months[c.month]} ${year}`,
-            c.machine,
-            product(c.product).name,
-            c.gram,
-            fmt(c.start, 1),
-            fmt(c.end, 1),
-            fmt(c.setup, 1),
-            fmt(c.gross),
-            fmt(c.good),
-          ]),
-        ),
+        "Потоки: массоподготовка → КДМ / БДМ → отделка · начало и конец — часы от начала месяца",
+        campaignRegistry(operations),
       )}
       ${panel(
         "Карты раскроя",
@@ -2359,6 +2462,10 @@
     document.querySelectorAll("[data-cut-machine]").forEach((btn) => (btn.onclick = () => {
       cutMachine = btn.dataset.cutMachine;
       cutPage = 0;
+      render();
+    }));
+    document.querySelectorAll("[data-registry-stream]").forEach((btn) => (btn.onclick = () => {
+      registryStream = btn.dataset.registryStream;
       render();
     }));
     document.querySelectorAll("[data-cut-page]").forEach((btn) => (btn.onclick = () => {

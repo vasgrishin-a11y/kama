@@ -51,11 +51,36 @@ test('S&OP UI: every section and filter renders without DB or browser errors',()
 });
 test('S&OP UI: search, pagination, scenario comparison, custom copy and Excel export',()=>{
  const dom=browser(),w=dom.window,d=w.document;try{
- d.querySelector('[data-tab="production"]').click();d.querySelector('[data-page="campaigns"][data-step="1"]').click();assert.match(d.querySelector('#content').textContent,/2 \/ 12/);
- const search=d.querySelector('[data-search="campaigns"]');search.value='pharma';search.dispatchEvent(new w.Event('input'));assert.match(d.querySelector('#content').textContent,/Pharma/);
+ d.querySelector('[data-tab="production"]').click();d.querySelector('[data-page="campaigns-mass"][data-step="1"]').click();assert.match(d.querySelector('#content').textContent,/2 \/ 12/);
+ const search=d.querySelector('[data-search="campaigns-mass"]');search.value='pharma';search.dispatchEvent(new w.Event('input'));assert.match(d.querySelector('#content').textContent,/Pharma/);
  d.querySelector('#demand-input').value='110';d.querySelector('#cost-input').value='120';d.querySelector('#repair-input').value='100';d.querySelector('#editor').close=()=>{};
  d.querySelector('#scenario-name').value='Тестовый сценарий';d.querySelector('#editor-form').dispatchEvent(new w.Event('submit',{cancelable:true}));assert.equal(d.querySelector('#scenario').value,'custom');assert.equal(d.querySelector('#scenario option:checked').textContent,'Тестовый сценарий');assert.equal(JSON.parse(w.localStorage.getItem('kama_sop_customs_v2'))[0].name,'Тестовый сценарий');
  d.querySelector('[data-tab="compare"]').click();assert.equal(d.querySelector('#compare-b').value,'custom');d.querySelector('#compare-a').value='stress';d.querySelector('#compare-a').dispatchEvent(new w.Event('change'));assert.equal(d.querySelector('#compare-a').value,'stress');
  w.eval(readFileSync(new URL('../assets/xlsx.full.min.js',import.meta.url),'utf8'));let exported;w.XLSX.writeFile=(wb,name)=>{exported={wb,name};};d.querySelector('#export').click();assert.ok(exported);assert.equal(exported.wb.SheetNames.length,17);assert.equal(w.XLSX.utils.sheet_to_json(exported.wb.Sheets['План SKU']).length,864);assert.match(exported.name,/custom/);
+ }finally{w.close();}
+});
+test('S&OP UI: campaign registry switches streams, default mass prep, stage-specific columns',()=>{
+ const dom=browser(),w=dom.window,d=w.document;try{
+ d.querySelector('[data-tab="production"]').click();
+ const buttons=[...d.querySelectorAll('[data-registry-stream]')];assert.deepEqual(buttons.map(b=>b.dataset.registryStream),['mass','kdm','bdm','fin']);
+ assert.deepEqual(buttons.map(b=>b.getAttribute('aria-pressed')),['true','false','false','false']);
+ const heads=()=>[...d.querySelectorAll('table[data-table-key^="campaigns-"] thead th')].map(th=>th.textContent.replace(/\s*[▲▼]\s*$/,''));
+ const cells=(col)=>[...d.querySelectorAll('table[data-table-key^="campaigns-"] tbody tr')].map(tr=>tr.children[col].textContent);
+ assert.ok(d.querySelector('table[data-table-key="campaigns-mass"]'));
+ assert.ok(heads().includes('Рецепт массы: ЛЦ / ХЦ / BCTMP'));assert.ok(heads().includes('Снабжает'));assert.ok(heads().includes('Волокно, т абс. сух.'));assert.ok(!heads().includes('Брутто, т'));
+ assert.ok(cells(2).every(v=>v==='МП-1'||v==='МП-2'));assert.ok(cells(9).every(v=>v==='КДМ-9'||v==='БДМ-7'));
+ assert.match(cells(5)[0],/^\d+([.,]\d+)?% \/ \d+([.,]\d+)?% \/ \d+([.,]\d+)?%$/);
+ d.querySelector('[data-registry-stream="kdm"]').click();
+ assert.equal(d.querySelector('[data-registry-stream="kdm"]').getAttribute('aria-pressed'),'true');
+ assert.ok(d.querySelector('table[data-table-key="campaigns-kdm"]'));
+ assert.ok(heads().includes('Брутто, т'));assert.ok(heads().includes('Обрезь, т'));assert.ok(!heads().includes('Снабжает'));
+ assert.ok(cells(2).every(v=>v==='КДМ-9'));
+ d.querySelector('[data-registry-stream="bdm"]').click();
+ assert.ok(d.querySelector('table[data-table-key="campaigns-bdm"]'));assert.ok(cells(2).every(v=>v==='БДМ-7'));
+ d.querySelector('[data-registry-stream="fin"]').click();
+ assert.ok(d.querySelector('table[data-table-key="campaigns-fin"]'));
+ assert.ok(heads().includes('Источник'));assert.ok(heads().includes('Годный, т'));assert.ok(!heads().includes('Брутто, т'));
+ assert.ok(cells(2).every(v=>v==='ПРС-1'||v==='ПРС-2'||v==='УП-1'));assert.ok(cells(5).every(v=>v==='КДМ-9'||v==='БДМ-7'));
+ assert.ok(!/NaN|undefined|Infinity/.test(d.querySelector('#content').textContent));
  }finally{w.close();}
 });
