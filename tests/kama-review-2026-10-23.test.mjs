@@ -106,7 +106,7 @@ test("UI: tab order, no captions/badges, period-aware overview pairs, no operati
   const dom = browser(), w = dom.window, d = w.document;
   try {
     const tabs = [...d.querySelectorAll("#nav [data-tab]")].map((b) => b.dataset.tab);
-    assert.deepEqual(tabs.slice(-2), ["compare", "orders"]);
+    assert.deepEqual(tabs.slice(-3), ["compare", "orders", "dispatch"]);
     assert.equal(d.querySelector("#subtitle"), null);
     assert.equal(d.querySelector("#validation"), null);
     assert.ok(!/проверок/.test(d.querySelector("main").textContent));

@@ -39,6 +39,7 @@
     ["finance", "₽", "Экономика плана"],
     ["compare", "⇆", "Сравнение версий"],
     ["orders", "✓", "Управление заказами"],
+    ["dispatch", "▦", "Графикование кампаний"],
   ];
   let year = 2026;
   const tableSorts = new Map(); /* tableKey -> { col, dir: "asc" | "desc" }; persistently stores column sort */
@@ -69,6 +70,13 @@
     obsoleteMode = "value",
     cutMachine = "all",
     cutPage = 0,
+    registryStream = "mass",
+    fiberType = "all",
+    dispatchStage = "all",
+    dispatchLinks = true,
+    dispatchCascade = true,
+    dispatchMoves = new Map(),
+    dispatchOrders = new Set(),
     segmentReviewOnly = false,
     segmentOff = new Set(),
     resourceModes = { fiber: "volume", coat: "volume", energy: "volume", water: "volume" },
@@ -140,6 +148,63 @@
   } catch (e) {
     customs = [];
   }
+  /* «Сегодня» плана — ATP-дата модуля заказов (23.10.2026): октябрьские
+     кампании до этого часа уже запущены или выполнены. */
+  const NOW_YEAR = 2026,
+    NOW_MONTH = 9,
+    NOW_DAY = Number(O.AS_OF.slice(8, 10)),
+    NOW_HOUR = (NOW_DAY - 1) * 24;
+  /* Статус кампании относительно «сегодня»: факт до октября, «идёт сейчас»
+     для кампаний, накрывающих текущий час, план после. */
+  function campaignStatus(c, y = year) {
+    if (y !== NOW_YEAR) return { label: "План", cls: "" };
+    if (c.month < NOW_MONTH) return { label: "Факт", cls: "shipped" };
+    if (c.month > NOW_MONTH) return { label: "План", cls: "" };
+    if (c.end <= NOW_HOUR) return { label: "Выполнена", cls: "shipped" };
+    if (c.start <= NOW_HOUR) return { label: "Идёт сейчас", cls: "warn" };
+    return { label: "План", cls: "" };
+  }
+  const statusPill = (c) => {
+    const s = campaignStatus(c);
+    return `<span class="pill ${s.cls}">${s.label}</span>`;
+  };
+  /* Классификация рецептуры волокна для кампаний массоподготовки: состав
+     ЛЦ / ХЦ / BCTMP и уровень мелования определяют вид массы. */
+  function recipeClass(recipe) {
+    if (!recipe) return "Без рецептуры";
+    if ((recipe.coat || 0) >= 0.12) return "Мелованная масса GC";
+    if ((recipe.coat || 0) >= 0.05) return "Мелованная масса LWC";
+    if ((recipe.bctmp || 0) >= 0.25) return "BCTMP-пухлая масса";
+    return "Немелованная офсетная масса";
+  }
+  const recipeColors = {
+    "Мелованная масса GC": "#4769ff",
+    "Мелованная масса LWC": "#9b58be",
+    "BCTMP-пухлая масса": "#ff8c00",
+    "Немелованная офсетная масса": "#27a47b",
+    "Без рецептуры": "#a1a9b7",
+  };
+  const recipeKey = (recipe) =>
+    recipe
+      ? [recipe.lc, recipe.sc, recipe.bctmp || 0, recipe.coat || 0]
+          .map((v) => Math.round(v * 1000))
+          .join("-")
+      : "none";
+  /* Каждая конкретная рецептура волокна получает свой устойчивый цвет: на
+     таймлайне массоподготовки одна рецептура узнаваемо повторяется из месяца
+     в месяц, а разные составы не сливаются в один «класс». */
+  const recipePalette = [
+    "#4769ff", "#ff8c00", "#27a47b", "#9b58be", "#e0455e", "#38a3c7",
+    "#b58a00", "#d66ba0", "#7cb342", "#8d6e63", "#566378", "#a1a9b7",
+  ];
+  const recipeColorCache = new Map();
+  const recipeColor = (recipe) => {
+    const key = recipeKey(recipe);
+    if (!recipeColorCache.has(key))
+      recipeColorCache.set(key, recipePalette[recipeColorCache.size % recipePalette.length]);
+    return recipeColorCache.get(key);
+  };
+
   const auxiliaryUnits = [
     {
       id: "МП-1",
@@ -184,7 +249,11 @@
   ];
 
   /* Auxiliary operations are reconciled with the same campaigns as KDM/BDM.
-     They expose bottlenecks instead of silently consuming duplicate tonnage. */
+     They expose bottlenecks instead of silently consuming duplicate tonnage.
+     Mass preparation is aggregated one level higher than the paper machines:
+     campaigns of a month with an identical fibre recipe (ЛЦ / ХЦ / BCTMP +
+     coating) are prepared as ONE mass campaign that covers ("снабжает")
+     several КДМ/БДМ campaigns; finishing stays 1:1 with machine campaigns. */
   function unitOperations(r) {
     const capacities = r.capacities.map((c) => ({
       ...c,
@@ -212,27 +281,83 @@
         let elapsed = 0,
           setupTotal = 0,
           runTotal = 0;
-        source.forEach((c, index) => {
-          const setup = index ? Math.min(1.2, c.setup * 0.25) : 0.5;
-          const run = c[unit.source] / unit.rate;
-          const begin = elapsed;
-          elapsed += setup + run;
-          setupTotal += setup;
-          runTotal += run;
-          campaigns.push({
-            ...c,
-            id: `${unit.id}-${c.id}`,
-            machine: unit.id,
-            name: unit.name,
-            stage: unit.stage,
-            start: begin,
-            end: elapsed,
-            setup,
-            run,
-            recipe: M.recipes ? M.recipes[c.product] : undefined,
-            supplies: c.machine,
+        if (unit.stage === "Массоподготовка") {
+          /* Group the month's machine campaigns by fibre recipe: one mass
+             campaign per recipe, in chronological order of its first member. */
+          const byRecipe = new Map();
+          for (const c of source) {
+            const recipe = M.recipes ? M.recipes[c.product] : undefined;
+            const key = recipeKey(recipe);
+            if (!byRecipe.has(key)) byRecipe.set(key, { recipe, members: [] });
+            byRecipe.get(key).members.push(c);
+          }
+          let seq = 0;
+          for (const group of byRecipe.values()) {
+            seq += 1;
+            const members = group.members,
+              first = members[0];
+            const setup = seq > 1 ? Math.min(1.2, (S(members, "setup") / members.length) * 0.25) : 0.5;
+            const run = S(members, unit.source) / unit.rate;
+            /* Just-in-time: партия массы готова к пуску первой покрываемой
+               кампании машины. Если агрегат перегружен, партии могут
+               перекрываться — узкое место видно, а не прячется в очередь. */
+            const begin = Math.max(0, first.start - (setup + run));
+            const end = begin + setup + run;
+            elapsed += setup + run;
+            setupTotal += setup;
+            runTotal += run;
+            campaigns.push({
+              ...first,
+              id: `${first.year || year}-${m + 1}-${unit.id}-${String(seq).padStart(2, "0")}`,
+              machine: unit.id,
+              name: unit.name,
+              stage: unit.stage,
+              product: first.product,
+              products: [...new Set(members.map((c) => c.product))],
+              grams: [...new Set(members.map((c) => c.gram))].sort((a, b) => a - b),
+              start: begin,
+              end,
+              setup,
+              run,
+              gross: S(members, "gross"),
+              good: S(members, "good"),
+              trim: S(members, "trim"),
+              fiber: S(members, "fiber"),
+              coat: S(members, "coat"),
+              energy: S(members, "energy"),
+              water: S(members, "water"),
+              recipe: group.recipe,
+              recipeClass: recipeClass(group.recipe),
+              covers: members.map((c) => c.id),
+              supplies: unit.family === "Картон" ? "КДМ-9" : "БДМ-7",
+            });
+          }
+        } else {
+          /* Отделка не может начаться раньше обеспечивающей кампании машины;
+             очередь агрегата идёт в хронологии производства. */
+          const ordered = [...source].sort((a, b) => a.start - b.start);
+          ordered.forEach((c, index) => {
+            const setup = index ? Math.min(1.2, c.setup * 0.25) : 0.5;
+            const run = c[unit.source] / unit.rate;
+            const begin = Math.max(elapsed, c.start);
+            elapsed = begin + setup + run;
+            setupTotal += setup;
+            runTotal += run;
+            campaigns.push({
+              ...c,
+              id: `${unit.id}-${c.id}`,
+              machine: unit.id,
+              name: unit.name,
+              stage: unit.stage,
+              start: begin,
+              end: elapsed,
+              setup,
+              run,
+              recipe: M.recipes ? M.recipes[c.product] : undefined,
+              supplies: c.machine,
+            });
           });
-        });
+        }
         capacities.push({
           month: m,
           machine: unit.id,
@@ -983,6 +1108,217 @@
       ${panel("2 · План отгрузок", "", table(["Отгрузка", "Поставка", "Заказ", "Клиент", "Продукт", "Кол-во, т", "Склад отгрузки", "Производство / запас", "Срок", "Статус"], shipmentRows), "shipment-plan-panel")}`;
   }
 
+  /* ─────────────────────────────────────────────────────────────────────────
+     Графикование кампаний производства — личная диспетчерская на окт–дек 2026.
+     Гантт строится по плану кампаний раздела «Производство» (активная версия)
+     и заказам раздела «Управление заказами». Ручные сдвиги кампаний живут
+     только в состоянии диспетчерской (dispatchMoves) и не меняют данные
+     остальных разделов.
+     ───────────────────────────────────────────────────────────────────────── */
+  const GANTT = { label: 172, day: 14, row: 30, head: 56, bar: 18 };
+  const GANTT_DAYS = 92, /* 01.10–31.12.2026 */
+    GANTT_MONTH_START = { 9: 0, 10: 31, 11: 61 },
+    GANTT_UNIT_ORDER = { "МП-1": 0, "МП-2": 1, "КДМ-9": 2, "БДМ-7": 3, "ПРС-1": 4, "ПРС-2": 5, "УП-1": 6 };
+  const dispatchStageFilter = {
+    all: { label: "Все переделы", test: () => true },
+    mass: { label: "Массоподготовка", test: (u) => u.stage === "Массоподготовка" },
+    kdm: { label: "КДМ", test: (u) => u.machine === "КДМ-9" },
+    bdm: { label: "БДМ", test: (u) => u.machine === "БДМ-7" },
+    fin: { label: "Отделка", test: (u) => u.stage === "Отделка" },
+  };
+  const ganttColor = (c) =>
+    c.stage === "Массоподготовка" ? "#8b5cf6"
+    : c.machine === "КДМ-9" ? "#4769ff"
+    : c.machine === "БДМ-7" ? "#19a27b"
+    : "#ff8c00";
+  const ganttDate = (dayIdx) => {
+    const dt = new Date(Date.UTC(2026, 9, 1 + dayIdx));
+    return `${String(dt.getUTCDate()).padStart(2, "0")}.${String(dt.getUTCMonth() + 1).padStart(2, "0")}`;
+  };
+  let dispatchStructure = null,
+    dispatchOrderIds = [],
+    ganttDrag = null,
+    ganttDocWired = false;
+
+  function commitDispatchMove(key, delta) {
+    const apply = (id, d) => dispatchMoves.set(id, (dispatchMoves.get(id) || 0) + d);
+    apply(key, delta);
+    if (dispatchCascade && dispatchStructure) {
+      const seen = new Set([key]);
+      const queue = [...(dispatchStructure.downstream.get(key) || [])];
+      while (queue.length) {
+        const id = queue.shift();
+        if (seen.has(id)) continue;
+        seen.add(id);
+        apply(id, delta);
+        queue.push(...(dispatchStructure.downstream.get(id) || []));
+      }
+    }
+  }
+
+  function dispatchView() {
+    const r = M.forYear(horizonResults.get(active), 2026);
+    const operations = unitOperations(r);
+    const camps = operations.campaigns.filter((c) => c.month >= 9 && c.month <= 11);
+    const byId = new Map(camps.map((c) => [c.id, c]));
+    /* Связи обеспеченности между переделами: масса → машина → отделка. */
+    const links = [];
+    for (const c of camps) {
+      if (c.stage === "Массоподготовка") {
+        for (const mid of c.covers) if (byId.has(mid)) links.push({ from: c.id, to: mid, kind: "mass" });
+      } else if (c.stage === "Отделка") {
+        const mid = c.id.slice(c.machine.length + 1);
+        if (byId.has(mid)) links.push({ from: mid, to: c.id, kind: "fin" });
+      }
+    }
+    const downstream = new Map();
+    for (const l of links) {
+      if (!downstream.has(l.from)) downstream.set(l.from, []);
+      downstream.get(l.from).push(l.to);
+    }
+    dispatchStructure = { byId, downstream };
+    const dayOf = (c, which) => {
+      const move = dispatchMoves.get(c.id) || 0;
+      const base = which === "start" ? Math.floor(c.start / 24) : Math.ceil(c.end / 24);
+      return GANTT_MONTH_START[c.month] + base + move;
+    };
+    /* Заказы → цепочка кампаний по всем переделам. */
+    const plan = currentOrderPlan();
+    const orderChain = (x) => {
+      if (!x.productionDate || !x.campaign || x.campaign === "Вне кампании SOP") return { machine: [], mass: [], fin: [] };
+      const parts = String(x.campaign).split(" + ");
+      const prefix = parts[0].slice(0, parts[0].lastIndexOf("-"));
+      const machine = [parts[0], ...parts.slice(1).map((n) => `${prefix}-${n}`)].filter((id) => byId.has(id));
+      const mass = camps.filter((c) => c.stage === "Массоподготовка" && c.covers.some((id) => machine.includes(id))).map((c) => c.id);
+      const fin = machine.flatMap((mid) => [`ПРС-1-${mid}`, `ПРС-2-${mid}`, `УП-1-${mid}`].filter((id) => byId.has(id)));
+      return { machine, mass, fin };
+    };
+    const ordersByCampaign = new Map();
+    for (const x of plan.results) {
+      const ch = orderChain(x);
+      for (const id of [...ch.machine, ...ch.mass, ...ch.fin]) {
+        if (!ordersByCampaign.has(id)) ordersByCampaign.set(id, []);
+        ordersByCampaign.get(id).push(x.orderId);
+      }
+    }
+    dispatchOrderIds = plan.results.filter((x) => x.productionDate && x.campaign !== "Вне кампании SOP").map((x) => x.orderId);
+    const highlight = new Set();
+    for (const oid of dispatchOrders) {
+      const x = plan.results.find((res) => res.orderId === oid);
+      if (!x) continue;
+      const ch = orderChain(x);
+      [...ch.machine, ...ch.mass, ...ch.fin].forEach((id) => highlight.add(id));
+    }
+    const filter = dispatchStageFilter[dispatchStage] || dispatchStageFilter.all;
+    const unitRows = [...new Map(operations.capacities.map((x) => [x.machine, x])).values()]
+      .filter((u) => filter.test(u))
+      .sort((a, b) => (GANTT_UNIT_ORDER[a.machine] ?? 9) - (GANTT_UNIT_ORDER[b.machine] ?? 9));
+    /* Правило обеспеченности: кампания следующего передела не может
+       стартовать раньше обеспечивающей кампании предыдущего передела. */
+    const scoredLinks = links
+      .map((l) => ({ ...l, from: byId.get(l.from), to: byId.get(l.to) }))
+      .map((l) => ({ ...l, gap: dayOf(l.to, "start") - dayOf(l.from, "start") }));
+    const violations = scoredLinks.filter((l) => l.gap < 0);
+    const movedCount = camps.filter((c) => dispatchMoves.has(c.id)).length;
+
+    /* ── Диаграмма Ганта (SVG, гранулярность суток) ── */
+    const width = GANTT.label + GANTT_DAYS * GANTT.day + 10;
+    const height = GANTT.head + unitRows.length * GANTT.row + 10;
+    const xOf = (day) => GANTT.label + day * GANTT.day;
+    const rowY = new Map();
+    unitRows.forEach((u, i) => rowY.set(u.machine, GANTT.head + i * GANTT.row));
+    let svg = `<svg class="chart gantt-svg" data-w="${width}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Диаграмма Ганта: кампании массоподготовки, КДМ, БДМ и отделки, октябрь–декабрь 2026"><title>Графикование кампаний производства · окт–дек 2026 · гранулярность суток</title>`;
+    svg += `<defs><marker id="gantt-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" fill="#8fa2c9"/></marker><marker id="gantt-arrow-bad" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" fill="#e02442"/></marker></defs>`;
+    /* Фон: выходные, сетка суток, разделители месяцев, шапка. */
+    for (let d = 0; d < GANTT_DAYS; d++) {
+      const dt = new Date(Date.UTC(2026, 9, 1 + d));
+      const weekend = dt.getUTCDay() === 0 || dt.getUTCDay() === 6;
+      if (weekend) svg += `<rect class="gantt-weekend" x="${xOf(d)}" y="${GANTT.head - 26}" width="${GANTT.day}" height="${height - GANTT.head + 26}"/>`;
+      svg += `<line class="gantt-grid${dt.getUTCDate() === 1 ? " month" : ""}" x1="${xOf(d)}" y1="${GANTT.head - 26}" x2="${xOf(d)}" y2="${height}"/>`;
+      svg += `<text class="gantt-day" x="${xOf(d) + GANTT.day / 2}" y="${GANTT.head - 10}" text-anchor="middle">${dt.getUTCDate()}</text>`;
+    }
+    svg += `<line class="gantt-grid month" x1="${xOf(GANTT_DAYS)}" y1="${GANTT.head - 26}" x2="${xOf(GANTT_DAYS)}" y2="${height}"/>`;
+    for (const [name, start, len] of [["Октябрь", 0, 31], ["Ноябрь", 31, 30], ["Декабрь", 61, 31]]) {
+      svg += `<text class="gantt-month" x="${xOf(start + len / 2)}" y="18" text-anchor="middle">${name} 2026</text>`;
+    }
+    /* Строки агрегатов. */
+    unitRows.forEach((unit, ri) => {
+      const yTop = GANTT.head + ri * GANTT.row;
+      svg += `<rect class="gantt-rowbg${ri % 2 ? " alt" : ""}" x="0" y="${yTop}" width="${width}" height="${GANTT.row}"/>`;
+      svg += `<text class="gantt-rowlabel" x="10" y="${yTop + GANTT.row / 2 + 4}">${esc(unit.name)}</text>`;
+    });
+    /* Линия «сегодня» — ATP-дата заказов (23.10.2026). */
+    const todayX = xOf(NOW_DAY - 1) + GANTT.day / 2;
+    svg += `<line class="gantt-today" x1="${todayX}" y1="4" x2="${todayX}" y2="${height}"><title>Сегодня ${orderDate(O.AS_OF)}</title></line><text class="gantt-today-label" x="${todayX + 4}" y="12">сегодня</text>`;
+    /* Связи между переделами (под полосами кампаний). */
+    if (dispatchLinks) {
+      const anchor = (id) => {
+        const c = byId.get(id);
+        const y = rowY.get(c.machine);
+        if (y === undefined) return null;
+        return { x0: xOf(Math.max(0, dayOf(c, "start"))), x1: xOf(Math.min(GANTT_DAYS, dayOf(c, "end"))), y: y + GANTT.row / 2 };
+      };
+      for (const l of scoredLinks) {
+        const f = anchor(l.from.id), t = anchor(l.to.id);
+        if (!f || !t) continue;
+        const bad = l.gap < 0;
+        const bend = Math.max(12, (t.x0 - f.x1) / 2);
+        svg += `<path class="gantt-link${bad ? " bad" : ""}" marker-end="url(#gantt-arrow${bad ? "-bad" : ""})" d="M${f.x1},${f.y} C${f.x1 + bend},${f.y} ${t.x0 - bend},${t.y} ${t.x0},${t.y}"><title>${esc(l.from.id)} → ${esc(l.to.id)}${bad ? ` · нарушение: старт раньше обеспечивающей кампании на ${-l.gap} сут.` : ""}</title></path>`;
+      }
+    }
+    /* Полосы кампаний: перетаскивание мышью, подсветка заказов, сдвиги. */
+    for (const c of camps) {
+      const y = rowY.get(c.machine);
+      if (y === undefined) continue;
+      const d0 = Math.max(0, dayOf(c, "start")), d1 = Math.min(GANTT_DAYS, dayOf(c, "end"));
+      const bx = xOf(d0), bw = Math.max(5, (d1 - d0) * GANTT.day - 2);
+      const by = y + (GANTT.row - GANTT.bar) / 2;
+      const moved = dispatchMoves.has(c.id);
+      const cls = ["gantt-bar", moved ? "moved" : "", highlight.has(c.id) ? "hl" : ""].filter(Boolean).join(" ");
+      const st = campaignStatus(c, 2026);
+      const ordersOf = ordersByCampaign.get(c.id) || [];
+      const moveText = moved ? ` · сдвинута вручную на ${dispatchMoves.get(c.id) > 0 ? "+" : ""}${dispatchMoves.get(c.id)} сут.` : "";
+      const title = `${c.id} · ${c.name} · ${(c.products || [c.product]).map((pid) => product(pid).name).join(", ")} · ${(c.grams || [c.gram]).join(", ")} г/м² · выпуск ${fmt(c.good)} т · ${ganttDate(d0)}–${ganttDate(d1)} · ${st.label}${ordersOf.length ? ` · заказы: ${ordersOf.join(", ")}` : ""}${moveText}`;
+      svg += `<rect class="${cls}" data-gantt-key="${esc(c.id)}" x="${bx}" y="${by}" width="${bw}" height="${GANTT.bar}" rx="3.5" fill="${ganttColor(c)}"><title>${esc(title)}</title></rect>`;
+      if (bw >= 62) svg += `<text class="gantt-barlabel" x="${bx + 5}" y="${by + 12.5}">${esc(c.id)}</text>`;
+    }
+    svg += `</svg>`;
+
+    const toolbar = `<div class="chart-toolbar dispatch-toolbar"><div class="flow-switch" role="group" aria-label="Передел на диаграмме Ганта">${Object.entries(dispatchStageFilter).map(([id, s]) => `<button type="button" data-dispatch-stage="${id}" aria-pressed="${dispatchStage === id}">${s.label}</button>`).join("")}</div><div class="flow-switch" role="group" aria-label="Инструменты диспетчерской"><button type="button" data-dispatch-links aria-pressed="${dispatchLinks}" title="Линии снабжения: масса → машина → отделка">Связи между переделами</button><button type="button" data-dispatch-cascade aria-pressed="${dispatchCascade}" title="Перетаскивание кампании сдвигает связанные кампании следующих переделов тем же сдвигом">Двигать связанные вместе</button><button type="button" class="dispatch-reset" data-dispatch-reset ${movedCount ? "" : "disabled"}>Сбросить сдвиги${movedCount ? ` (${movedCount})` : ""}</button></div><span class="chart-context">перетаскивайте кампании мышью · сдвиги локальные, данные других разделов не меняются</span></div>`;
+    const legend = `<div class="flow-legend gantt-legend"><span><i style="background:#8b5cf6"></i>Массоподготовка</span><span><i style="background:#4769ff"></i>КДМ-9</span><span><i style="background:#19a27b"></i>БДМ-7</span><span><i style="background:#ff8c00"></i>Отделка</span><span><i class="gantt-moved-swatch"></i>сдвинута вручную</span><span><i class="gantt-hl-swatch"></i>кампании выбранных заказов</span><span><i class="gantt-link-swatch"></i>связь обеспеченности</span><span><i class="gantt-bad-swatch"></i>нарушение последовательности</span></div>`;
+
+    const violationsBody = violations.length
+      ? `<p class="panel-note">Красные связи — кампания следующего передела стартует раньше обеспечивающей кампании предыдущего (масса → машина → отделка). Передвиньте полосы так, чтобы связи стали серыми, или сбросьте сдвиги.</p>${table(["Связь", "Обеспечивающая кампания", "Зависимая кампания", "Старт раньше на, сут.", "Как исправить"], violations.map((v) => [v.kind === "mass" ? "Масса → машина" : "Машина → отделка", v.from.id, v.to.id, `<span class="delta-neg">${-v.gap}</span>`, `сдвинуть ${v.to.id} вправо на ${-v.gap} сут. или ${v.from.id} влево`]))}`
+      : '<p class="muted">Нарушений нет: каждая кампания машины стартует не раньше обеспечивающей кампании массы, отделка — не раньше своей кампании машины.</p>';
+
+    const orderRows = plan.results.map((x) => {
+      const ch = orderChain(x);
+      const coverage = x.shipped
+        ? '<span class="pill shipped">Отгружено</span>'
+        : x.productionDate
+          ? '<span class="pill">Через производство</span>'
+          : '<span class="pill">Из запаса</span>';
+      return [
+        `<input type="checkbox" data-dispatch-order="${x.orderId}" aria-label="Подсветить заказ ${x.orderId} на диаграмме Ганта" ${dispatchOrders.has(x.orderId) ? "checked" : ""}>`,
+        `<b>${x.orderId}</b><small>${esc(x.customer)}</small>`,
+        esc(x.productName),
+        fmt(x.qty),
+        orderDate(x.requestedDate),
+        coverage,
+        x.productionDate ? `${orderDate(x.productionDate)}<small>${esc(x.machine)}</small>` : "—",
+        ch.mass.length ? ch.mass.join(", ") : "—",
+        ch.machine.length ? ch.machine.join(", ") : x.campaign === "Вне кампании SOP" ? '<span class="pill red">Вне кампании SOP</span>' : "—",
+        ch.fin.length ? ch.fin.join(", ") : "—",
+      ];
+    });
+    const ordersToolbar = `<div class="chart-toolbar"><div class="flow-switch" role="group" aria-label="Подсветка заказов на диаграмме"><button type="button" data-dispatch-order-all="prod">Выделить все с производством (${dispatchOrderIds.length})</button><button type="button" data-dispatch-order-all="clear">Снять выделение</button></div><span class="chart-context">${dispatchOrders.size ? `выбрано ${dispatchOrders.size} ${plural(dispatchOrders.size, "заказ", "заказа", "заказов")} · подсвечено ${highlight.size} ${plural(highlight.size, "кампания", "кампании", "кампаний")} на Ганте` : "выберите заказ — его кампании подсветятся во всех переделах"}</span></div>`;
+
+    return `<div class="kpis kpis-4">${kpi("Кампаний в окне", fmt(camps.length), "", "окт–дек 2026 · все переделы", true)}${kpi("Заказов в диспетчерской", fmt(plan.results.length), "", `${dispatchOrderIds.length} через производство · ATP на ${orderDate(O.AS_OF)}`)}${kpi("Сдвинуто вручную", fmt(movedCount), "кампаний", dispatchCascade ? "каскад связанных включён" : "только выбранная кампания", movedCount ? "accent" : "")}${kpi("Нарушений последовательности", fmt(violations.length), "связей", violations.length ? "есть накладки между переделами" : "обеспеченность соблюдена", violations.length ? "alert" : "")}</div>
+      ${panel("Диаграмма Ганта · кампании по переделам", "Окт–дек 2026 · гранулярность суток · связи масса → КДМ/БДМ → отделка", `${toolbar}<div class="chart-scroll gantt-scroll">${svg}</div>${legend}`, "dispatch-gantt-panel")}
+      ${panel("Последовательность между переделами", "Проверка обеспеченности после ручных сдвигов", violationsBody, "dispatch-violations-panel")}
+      ${panel("Заказы и их кампании", "Список заказов раздела «Управление заказами» · в каких кампаниях переделов они запланированы", `${ordersToolbar}${paged("dispatch-orders", ["Выбор", "Заказ / клиент", "Продукт", "Кол-во, т", "Требуемая дата", "Покрытие", "Дата производства", "Кампании массоподготовки", "Кампании КДМ / БДМ", "Кампании отделки"], orderRows)}`, "dispatch-orders-panel")}`;
+  }
+
   function heat(r, operations = unitOperations(r)) {
     const stages = ["Массоподготовка", "КДМ / БДМ", "Отделка"];
     const units = [
@@ -1263,22 +1599,55 @@
     )}</article>`;
   }
 
+  /* Компактная подпись списка кампаний: «10-КДМ-9-3 + 4» (как в заказах). */
+  const coversLabel = (ids) =>
+    ids && ids.length
+      ? `${ids[0]}${ids.slice(1).map((id) => ` + ${id.split("-").pop()}`).join("")}`
+      : "—";
+
   function campaignTimeline(operations, stage) {
     const isMass = stage === "Массоподготовка";
     const units = [...new Map(operations.capacities.map((c) => [c.machine, c])).values()].filter(
       (c) => c.stage === stage && (family === "all" || c.family === "all" || c.family === family),
     );
-    return `<section class="campaign-stage embedded"><h3>Последовательность кампаний · ${esc(stage)}${isMass ? " → КДМ-9 / БДМ-7" : ""}</h3>${isMass ? '<p class="panel-note">Кампании массоподготовки сгруппированы по рецептуре волокна (ЛЦ / ХЦ / BCTMP) и «снабжают» последующие кампании на КДМ-9 (картон) и БДМ-7 (бумага). Состав массы в каждом месяце — тот, что готовится для подачи на машину.</p>' : ""}${units.map((unit) => `<div class="campaign-machine"><h4>${esc(unit.name)}</h4>${M.months.map((mn, mi) => {
+    const legendRecipes = [];
+    if (isMass) {
+      const seen = new Set();
+      for (const unit of units)
+        for (const c of operations.campaigns)
+          if (
+            c.machine === unit.machine &&
+            c.month >= fromMonth && c.month <= toMonth &&
+            !seen.has(recipeKey(c.recipe))
+          ) {
+            seen.add(recipeKey(c.recipe));
+            legendRecipes.push(c.recipe);
+          }
+    }
+    const legend = isMass
+      ? `<div class="flow-legend mass-legend" aria-label="Рецептуры волокна на массоподготовке">${legendRecipes
+          .map((rc) => `<span title="${esc(recipeClass(rc))}"><i style="background:${recipeColor(rc)}"></i>ЛЦ ${pct(rc.lc)} · ХЦ ${pct(rc.sc)}${rc.bctmp ? ` · BCTMP ${pct(rc.bctmp)}` : ""}${(rc.coat || 0) >= 0.05 ? ` · мел. ${pct(rc.coat)}` : ""}</span>`)
+          .join("")}<span><i class="now-swatch"></i>линия «сегодня» — ${orderDate(O.AS_OF)}</span></div>`
+      : "";
+    const note = isMass
+      ? '<p class="panel-note">Кампании массоподготовки сгруппированы по рецептуре волокна (ЛЦ / ХЦ / BCTMP): одна кампания массы одного рецепта покрывает несколько кампаний на КДМ-9 (картон) или БДМ-7 (бумага) — уровень агрегации на переделе массы выше, чем на машинах. Цвет полосы — вид рецептуры массы, а не машина-потребитель.</p>'
+      : "";
+    return `<section class="campaign-stage embedded"><h3>Последовательность кампаний · ${esc(stage)}${isMass ? " → КДМ-9 / БДМ-7" : ""}</h3>${note}${legend}${units.map((unit) => `<div class="campaign-machine"><h4>${esc(unit.name)}</h4>${M.months.map((mn, mi) => {
       if (mi < fromMonth || mi > toMonth) return "";
       const c = operations.capacities.find((x) => x.machine === unit.machine && x.month === mi);
       const cs = operations.campaigns.filter((x) => x.machine === unit.machine && x.month === mi);
       if (!c) return "";
+      const isNowMonth = year === NOW_YEAR && mi === NOW_MONTH;
+      const started = cs.filter((x) => x.start <= NOW_HOUR).length;
       return `<button class="campaign-month ${month === String(mi) ? "selected" : ""}" data-camp-month="${mi}" aria-label="Выбрать кампании ${mn} ${year}"><span>${mn}</span><div class="timeline">${cs.map((x) => {
-        const recipe = isMass && x.recipe;
-        const recipeText = recipe ? ` · масса ${pct(recipe.lc)} ЛЦ / ${pct(recipe.sc)} ХЦ${recipe.bctmp ? ` / ${pct(recipe.bctmp)} BCTMP` : ""}${recipe.coat ? ` + ${pct(recipe.coat)} мелование` : ""}` : "";
-        const suppliesText = isMass && x.supplies ? ` · снабжает ${x.supplies}` : "";
-        return `<i style="width:${((x.run + x.setup) / c.calendar) * 100}%" title="${esc(product(x.product).name)} · ${x.gram} г/м² · выпуск ${fmt(x.good)} т · ${fmt(x.run + x.setup, 1)} ч${recipeText}${suppliesText}"></i>`;
-      }).join("")}<i class="repair" style="width:${(c.repair / c.calendar) * 100}%" title="Плановый ремонт · ${fmt(c.repair)} ч"></i></div><small>${fmt(c.run)} ч работы · ${fmt(c.setup)} ч переходов · ${c.used > c.available ? `<b class="delta-neg">дефицит ${fmt(c.used - c.available)} ч</b>` : `резерв ${fmt(c.available - c.used)} ч`}</small></button>`;
+        const cls = isNowMonth ? (x.end <= NOW_HOUR ? "done" : x.start <= NOW_HOUR ? "active" : "planned") : "";
+        const colorStyle = isMass && x.recipe ? `background:${recipeColor(x.recipe)};` : "";
+        const statusText = isNowMonth ? ` · статус: ${campaignStatus(x).label}` : "";
+        const title = isMass
+          ? `${x.id} · ${x.recipeClass} · состав: ${pct(x.recipe.lc)} ЛЦ / ${pct(x.recipe.sc)} ХЦ / ${pct(x.recipe.bctmp || 0)} BCTMP · мелование ${pct(x.recipe.coat || 0)} · ${(x.products || [x.product]).map((pid) => product(pid).name).join(", ")} · масса ${fmt(x.gross)} т (волокно ${fmt(x.fiber, 1)} т абс. сух.) · ${fmt(x.run + x.setup, 1)} ч · покрывает ${x.covers.length} ${plural(x.covers.length, "кампанию", "кампании", "кампаний")} ${x.supplies}: ${coversLabel(x.covers)}${statusText}`
+          : `${product(x.product).name} · ${x.gram} г/м² · выпуск ${fmt(x.good)} т · ${fmt(x.run + x.setup, 1)} ч${statusText}`;
+        return `<i class="${cls}" style="${colorStyle}width:${((x.run + x.setup) / c.calendar) * 100}%" title="${esc(title)}"></i>`;
+      }).join("")}<i class="repair" style="width:${(c.repair / c.calendar) * 100}%" title="Плановый ремонт · ${fmt(c.repair)} ч"></i>${isNowMonth ? `<i class="now-line" style="left:${(NOW_HOUR / c.calendar) * 100}%" title="Сегодня ${orderDate(O.AS_OF)}: производство запущено, часть кампаний выполнена"></i>` : ""}</div><small>${isNowMonth ? `<b class="now-note">▶ запущено ${started} из ${cs.length}</b> · ` : ""}${fmt(c.run)} ч работы · ${fmt(c.setup)} ч переходов · ${c.used > c.available ? `<b class="delta-neg">дефицит ${fmt(c.used - c.available)} ч</b>` : `резерв ${fmt(c.available - c.used)} ч`}</small></button>`;
     }).join("")}</div>`).join("")}</section>`;
   }
 
@@ -1341,6 +1710,144 @@
       return `<article class="cut-campaign"><div class="cut-campaign-head"><div><small>${finishing} · источник ${first.machine} · ${M.months[first.month]} ${year}</small><h4>${esc(p.name)} · ${first.gram} г/м²</h4><span>Кампания ${esc(campaignId)} · ${schemes.size} ${plural(schemes.size, "схема", "схемы", "схем")} · ${rows.length} ${plural(rows.length, "партия", "партии", "партий")} раскроя</span></div><div class="cut-total"><strong>${fmt(good)} т</strong><span>годный · брутто ${fmt(gross)} т · обрезь ${pct(trim)}</span></div></div>${patterns}</article>`;
     }).join("");
     return `<div class="cutting-plan"><div class="chart-toolbar"><div class="flow-switch" role="group" aria-label="Фильтр карт раскроя по машине">${[["all", "Все машины"], ["КДМ-9", "КДМ-9 → ПРС-1"], ["БДМ-7", "БДМ-7 → ПРС-2"]].map(([id, label]) => `<button type="button" data-cut-machine="${id}" aria-pressed="${cutMachine === id}">${label}</button>`).join("")}</div><span class="chart-context">${campaigns.length} ${plural(campaigns.length, "кампания", "кампании", "кампаний")} · ${schemeCount} ${plural(schemeCount, "схема", "схемы", "схем")} · ${cuts.length} ${plural(cuts.length, "партия", "партии", "партий")} раскроя</span></div><h3>План раскроя по каждой кампании</h3>${cards || '<p class="muted">Для выбранного фильтра карт раскроя нет.</p>'}<div class="pager"><button class="button" type="button" data-cut-page="-1" ${cutPage === 0 ? "disabled" : ""}>← Предыдущие кампании</button><span>${cutPage + 1} / ${pageCount}</span><button class="button" type="button" data-cut-page="1" ${cutPage >= pageCount - 1 ? "disabled" : ""}>Следующие кампании →</button></div></div>`;
+  }
+
+  /* Campaign registry across all four production streams: mass preparation,
+     KDM, BDM and finishing. Buttons switch the stream (mass prep by default);
+     every stream shows the campaigns of its stage for the selected period and
+     the columns that stage actually carries (recipe and fibre for mass prep,
+     gross/trim for the paper machines, source unit and good output for
+     finishing). */
+  const registryStreams = {
+    mass: {
+      label: "1 · Массоподготовка",
+      note: "МП-1 / МП-2 · кампании массы по рецептуре волокна: одна покрывает несколько кампаний КДМ-9 / БДМ-7",
+    },
+    kdm: { label: "2 · КДМ", note: "КДМ-9 · картон" },
+    bdm: { label: "3 · БДМ", note: "БДМ-7 · бумага" },
+    fin: {
+      label: "4 · Отделка",
+      note: "ПРС-1 / ПРС-2 / УП-1 · резка, перемотка, упаковка",
+    },
+  };
+  function campaignRegistry(operations) {
+    const inPeriod = (c) =>
+      c.month >= fromMonth &&
+      c.month <= toMonth &&
+      (family === "all" || product(c.product).family === family);
+    const all = operations.campaigns.filter(inPeriod);
+    const byStream = {
+      mass: all.filter((c) => c.stage === "Массоподготовка"),
+      kdm: all.filter((c) => c.machine === "КДМ-9"),
+      bdm: all.filter((c) => c.machine === "БДМ-7"),
+      fin: all.filter((c) => c.stage === "Отделка"),
+    };
+    const monthLabel = (c) => `${M.months[c.month]} ${year}`;
+    const hours = (c) => [
+      fmt(c.start, 1),
+      fmt(c.end, 1),
+      fmt(c.setup, 1),
+      fmt(c.run, 1),
+    ];
+    const timeHead = ["Начало, ч", "Конец, ч", "Переход, ч", "Работа, ч"];
+    const machineTable = {
+      headers: [
+        "Кампания",
+        "Месяц",
+        "Машина",
+        "Продукт",
+        "г/м²",
+        ...timeHead,
+        "Брутто, т",
+        "Годный, т",
+        "Обрезь, т",
+        "Статус",
+      ],
+      rows: byStream[registryStream].map((c) => [
+        c.id,
+        monthLabel(c),
+        c.machine,
+        product(c.product).name,
+        c.gram,
+        ...hours(c),
+        fmt(c.gross),
+        fmt(c.good),
+        fmt(c.trim, 1),
+        statusPill(c),
+      ]),
+    };
+    const tables = {
+      mass: {
+        headers: [
+          "Кампания",
+          "Месяц",
+          "Агрегат",
+          "Рецептура массы",
+          "Состав: ЛЦ / ХЦ / BCTMP",
+          "Мелование",
+          "Продукты",
+          "г/м²",
+          "Покрывает кампании",
+          "Волокно, т абс. сух.",
+          "Масса на машину, т",
+          "Снабжает",
+          ...timeHead,
+          "Статус",
+        ],
+        rows: byStream.mass.map((c) => [
+          c.id,
+          monthLabel(c),
+          c.machine,
+          `<i class="recipe-chip" style="background:${recipeColor(c.recipe)}"></i>${c.recipeClass}`,
+          c.recipe
+            ? `${pct(c.recipe.lc)} / ${pct(c.recipe.sc)} / ${pct(c.recipe.bctmp || 0)}`
+            : "—",
+          c.recipe ? pct(c.recipe.coat) : "—",
+          (c.products || [c.product]).map((pid) => product(pid).name).join(", "),
+          (c.grams || [c.gram]).join(", "),
+          `${coversLabel(c.covers)} (${c.covers.length})`,
+          fmt(c.fiber, 1),
+          fmt(c.gross),
+          c.supplies,
+          ...hours(c),
+          statusPill(c),
+        ]),
+      },
+      kdm: machineTable,
+      bdm: machineTable,
+      fin: {
+        headers: [
+          "Кампания",
+          "Месяц",
+          "Агрегат",
+          "Продукт",
+          "г/м²",
+          "Источник",
+          ...timeHead,
+          "Годный, т",
+          "Статус",
+        ],
+        rows: byStream.fin.map((c) => [
+          c.id,
+          monthLabel(c),
+          c.machine,
+          product(c.product).name,
+          c.gram,
+          c.supplies,
+          ...hours(c),
+          fmt(c.good),
+          statusPill(c),
+        ]),
+      },
+    };
+    const table = tables[registryStream] || tables.mass;
+    const buttons = Object.entries(registryStreams)
+      .map(
+        ([id, s]) =>
+          `<button type="button" data-registry-stream="${id}" aria-pressed="${registryStream === id}">${s.label} (${byStream[id].length})</button>`,
+      )
+      .join("");
+    return `<div class="chart-toolbar"><div class="flow-switch" role="group" aria-label="Поток реестра производственных кампаний">${buttons}</div><span class="chart-context">${registryStreams[registryStream].note}</span></div>${paged(`campaigns-${registryStream}`, table.headers, table.rows)}`;
   }
 
   function productionView(r, t) {
@@ -1455,34 +1962,8 @@
       )}
       ${panel(
         "Реестр производственных кампаний",
-        "Начало и конец — часы от начала месяца",
-        paged(
-          "campaigns",
-          [
-            "Кампания",
-            "Месяц",
-            "Машина",
-            "Продукт",
-            "г/м²",
-            "Начало, ч",
-            "Конец, ч",
-            "Переход, ч",
-            "Брутто, т",
-            "Годный, т",
-          ],
-          camps.map((c) => [
-            c.id,
-            `${M.months[c.month]} ${year}`,
-            c.machine,
-            product(c.product).name,
-            c.gram,
-            fmt(c.start, 1),
-            fmt(c.end, 1),
-            fmt(c.setup, 1),
-            fmt(c.gross),
-            fmt(c.good),
-          ]),
-        ),
+        "Потоки: массоподготовка → КДМ / БДМ → отделка · начало и конец — часы от начала месяца",
+        campaignRegistry(operations),
       )}
       ${panel(
         "Карты раскроя",
@@ -1547,27 +2028,107 @@
       const rows = source.filter((x) => x.id === id && x.month === m);
       return rows.length ? S(rows, fn) : null;
     });
+    /* Виды волокнистого сырья: доли ЛЦ / ХЦ / BCTMP берутся из рецептур
+       кампаний того же месяца (активный план и бизнес-план — из своих). */
+    const fiberTypeNames = {
+      all: "Всё волокно",
+      lc: "Лиственная белёная (ЛЦ)",
+      sc: "Хвойная белёная (ХЦ)",
+      bctmp: "Белёная ХТММ (BCTMP)",
+    };
+    const fiberTypeShare = (sourceCampaigns) => M.months.map((_, m) => {
+      const cs = sourceCampaigns.filter(
+        (c) => c.month === m && (family === "all" || product(c.product).family === family),
+      );
+      const total = S(cs, "fiber");
+      return total ? S(cs, (c) => c.fiber * ((M.recipes[c.product] || {})[fiberType] || 0)) / total : 0;
+    });
     const resourceCharts = Object.entries(names).map(([id, meta]) => {
       const cost = resourceModes[id] === "cost";
       const value = (fact) => (x) => (cost ? resourceCost(x, meta, fact) / 1e6 : x.used);
-      const series = [
-        { name: "БП", values: monthlyBy(bpResources, id, value(false)), color: "#b8c0cc", slot: 0 },
-        { name: "Факт", values: monthlyBy(allResources, id, value(true), isActual), color: "#27364a", slot: 1 },
-        { name: "План S&OP", values: monthlyBy(allResources, id, value(false), (m) => !isActual(m)), color: meta.color, slot: 1 },
-        ...(cost ? [] : [{ name: "Месячное ограничение снабжения", values: monthlyBy(allResources, id, (x) => x.available), color: "#ed0084", line: true }]),
-      ].filter((s) => s.values.some(Number.isFinite));
-      const toggle = `<div class="chart-toolbar"><div class="flow-switch" role="group" aria-label="Показатель: ${esc(meta.name)}"><button type="button" data-resource-mode="${id}" data-value="volume" aria-pressed="${!cost}">Объём, ${esc(meta.unit)}</button><button type="button" data-resource-mode="${id}" data-value="cost" aria-pressed="${cost}">Затраты, млн ₽</button></div></div>`;
-      return panel(`Динамика · ${meta.name}`, "", `${toggle}${chart(`${meta.name}: ${cost ? "затраты" : "объём"}`, series, cost ? "млн ₽" : meta.unit, { compare: true, split: true, context: cost ? "БП · факт · план S&OP" : "БП · факт · план S&OP · лимит" })}`, "resource-dynamic");
+      const byType = id === "fiber" && fiberType !== "all";
+      const activeShare = byType ? fiberTypeShare(r.campaigns) : null;
+      const bpShare = byType ? fiberTypeShare(bp.campaigns) : null;
+      const typedValue = (share, fact) => (x) => value(fact)(x) * (share[x.month] ?? 0);
+      const series = (byType
+        ? [
+            { name: "БП", values: monthlyBy(bpResources, id, typedValue(bpShare, false)), color: "#b8c0cc", slot: 0 },
+            { name: "Факт", values: monthlyBy(allResources, id, typedValue(activeShare, true), isActual), color: "#27364a", slot: 1 },
+            { name: "План S&OP", values: monthlyBy(allResources, id, typedValue(activeShare, false), (m) => !isActual(m)), color: meta.color, slot: 1 },
+          ]
+        : [
+            { name: "БП", values: monthlyBy(bpResources, id, value(false)), color: "#b8c0cc", slot: 0 },
+            { name: "Факт", values: monthlyBy(allResources, id, value(true), isActual), color: "#27364a", slot: 1 },
+            { name: "План S&OP", values: monthlyBy(allResources, id, value(false), (m) => !isActual(m)), color: meta.color, slot: 1 },
+            ...(cost ? [] : [{ name: "Месячное ограничение снабжения", values: monthlyBy(allResources, id, (x) => x.available), color: "#ed0084", line: true }]),
+          ]
+      ).filter((s) => s.values.some(Number.isFinite));
+      const typeToggle = id === "fiber"
+        ? `<div class="flow-switch fiber-type-switch" role="group" aria-label="Вид волокнистого сырья">${Object.entries(fiberTypeNames).map(([tid, tname]) => `<button type="button" data-fiber-type="${tid}" title="${esc(tname)}" aria-pressed="${fiberType === tid}">${tid === "all" || tid === "bctmp" ? (tid === "all" ? "Всё волокно" : "BCTMP") : tid.toUpperCase()}</button>`).join("")}</div>`
+        : "";
+      const toggle = `<div class="chart-toolbar"><div class="flow-switch" role="group" aria-label="Показатель: ${esc(meta.name)}"><button type="button" data-resource-mode="${id}" data-value="volume" aria-pressed="${!cost}">Объём, ${esc(meta.unit)}</button><button type="button" data-resource-mode="${id}" data-value="cost" aria-pressed="${cost}">Затраты, млн ₽</button></div>${typeToggle}</div>`;
+      const title = byType ? `${meta.name} · ${fiberTypeNames[fiberType]}` : meta.name;
+      const context = byType
+        ? "доля вида по рецептурам кампаний · БП · факт · план S&OP"
+        : cost ? "БП · факт · план S&OP" : "БП · факт · план S&OP · лимит";
+      return panel(`Динамика · ${title}`, "", `${toggle}${chart(`${title}: ${cost ? "затраты" : "объём"}`, series, cost ? "млн ₽" : meta.unit, { compare: true, split: true, context })}`, "resource-dynamic");
     }).join("");
     const productFiber = M.products.filter((p) => family === "all" || p.family === family).map((p) => ({
       name: p.name,
       value: S(r.campaigns.filter((c) => c.product === p.id && c.month >= fromMonth && c.month <= toMonth), "fiber"),
       color: p.family === "Картон" ? "#4769ff" : "#19a27b",
     })).sort((a, b) => b.value - a.value).slice(0, 6);
+    /* План закупок по всему сырью и ресурсам: поставщики и их доли — из
+       аналитики (как в плане перемещений), объёмы — потребность плана,
+       энергия и вода — по тарифу с месячным индексом цены. */
+    const tariffSource = {
+      energy: { name: "Энергосбыт · сетевой тариф", freight: 0, lead: 0, share: 1 },
+      water: { name: "Водоканал · тариф", freight: 0, lead: 0, share: 1 },
+    };
+    let procurementCost = 0;
+    const procurementRows = rr.flatMap((x) => {
+      const meta = names[x.id];
+      const sups = A.suppliers.filter((s) => s.resource === x.id);
+      const list = sups.length ? sups : [tariffSource[x.id]];
+      const effPrice = (s) => (sups.length
+        ? s.price + s.freight
+        : x.used ? resourceCost(x, meta, isActual(x.month)) / x.used : meta.tariff);
+      return list.map((s) => {
+        const qty = x.used * s.share;
+        const cost = (qty * effPrice(s)) / 1e6;
+        procurementCost += cost;
+        const deficit = x.used > x.available;
+        return [
+          `${M.months[x.month]} ${year}`,
+          meta.name,
+          s.name,
+          fmt(qty, 1),
+          meta.unit,
+          fmt(effPrice(s)),
+          s.freight ? fmt(s.freight) : "—",
+          s.lead ? `${s.lead} дн.` : "—",
+          pct(s.share),
+          fmt(cost, 1),
+          deficit ? '<span class="pill warn">Дефицит лимита</span>' : '<span class="pill">В лимите</span>',
+        ];
+      });
+    });
+    const procurementSummary = Object.entries(names)
+      .map(([id, meta]) => `${meta.name}: <b>${fmt(S(rr.filter((x) => x.id === id), "used"))}</b> ${meta.unit}`)
+      .join(" · ");
     return `<div class="catalog resource-catalog">${cards}</div>
       <div class="grid equal chart-grid resource-charts">${resourceCharts}</div>
       ${panel("Волокно по продуктовым группам", "Топ-6 · т абс. сух.", horizontalChart("Волокно по продуктам", productFiber, "т абс. сух.", 0, { width: 1120 }))}
       ${panel("Месячные ограничения снабжения", "", table(["Месяц", "Ресурс", "Ед.", "Лимит", "Потребность", "Резерв", "Использование"], rr.map((x) => [`${M.months[x.month]} ${year}`, names[x.id].name, names[x.id].unit, fmt(x.available), fmt(x.used), fmt(x.available - x.used), `<span class="${x.used / (x.available || 1) >= 0.97 ? "delta-neg" : ""}">${pct(x.used / (x.available || 1))}</span>`])))}
+      ${panel(
+        "План закупок сырья",
+        "Поставщики, объёмы и затраты по месяцам выбранного периода",
+        `<div class="chart-toolbar"><span class="chart-context">Потребность за период — ${procurementSummary} · закупки ≈ <b>${fmt(procurementCost, 1)} млн ₽</b> · цены поставщиков как в плане перемещений, энергия и вода — тариф с индексом</span></div>${paged(
+          "procurement",
+          ["Месяц", "Ресурс", "Поставщик", "Объём закупки", "Ед.", "Цена, ₽/ед.", "Логистика, ₽/ед.", "Лидтайм", "Доля поставщика", "Затраты, млн ₽", "Покрытие лимита"],
+          procurementRows,
+        )}`,
+      )}
       ${panel("Коэффициенты потребления", "На 1 т брутто-выпуска", table(["Группа", "Волокно, т/т", "Мелование, т/т", "Энергия, МВт·ч/т", "Вода, м³/т"], M.products.filter((p) => family === "all" || p.family === family).map((p) => [p.name, fmt(p.fiber, 3), fmt(p.coat, 3), fmt(p.energy, 2), fmt(18 * Number(r.config.waterIntensity || 1), 1)])))}`;
   }
 
@@ -2319,6 +2880,7 @@
       movements: movementView,
       finance: financeView,
       compare: compareView,
+      dispatch: dispatchView,
     };
     $("#content").innerHTML = views[tab](r, t);
     wireContent();
@@ -2359,6 +2921,10 @@
     document.querySelectorAll("[data-cut-machine]").forEach((btn) => (btn.onclick = () => {
       cutMachine = btn.dataset.cutMachine;
       cutPage = 0;
+      render();
+    }));
+    document.querySelectorAll("[data-registry-stream]").forEach((btn) => (btn.onclick = () => {
+      registryStream = btn.dataset.registryStream;
       render();
     }));
     document.querySelectorAll("[data-cut-page]").forEach((btn) => (btn.onclick = () => {
@@ -2446,6 +3012,72 @@
       resourceModes[btn.dataset.resourceMode] = btn.dataset.value;
       render();
     }));
+    document.querySelectorAll("[data-fiber-type]").forEach((btn) => (btn.onclick = () => {
+      fiberType = btn.dataset.fiberType;
+      render();
+    }));
+    document.querySelectorAll("[data-dispatch-stage]").forEach((btn) => (btn.onclick = () => {
+      dispatchStage = btn.dataset.dispatchStage;
+      render();
+    }));
+    document.querySelectorAll("[data-dispatch-links]").forEach((btn) => (btn.onclick = () => {
+      dispatchLinks = !dispatchLinks;
+      render();
+    }));
+    document.querySelectorAll("[data-dispatch-cascade]").forEach((btn) => (btn.onclick = () => {
+      dispatchCascade = !dispatchCascade;
+      render();
+    }));
+    const dispatchReset = document.querySelector("[data-dispatch-reset]");
+    if (dispatchReset) dispatchReset.onclick = () => {
+      dispatchMoves.clear();
+      render();
+    };
+    document.querySelectorAll("[data-dispatch-order]").forEach((input) => (input.onchange = () => {
+      if (input.checked) dispatchOrders.add(input.dataset.dispatchOrder);
+      else dispatchOrders.delete(input.dataset.dispatchOrder);
+      render();
+    }));
+    document.querySelectorAll("[data-dispatch-order-all]").forEach((btn) => (btn.onclick = () => {
+      dispatchOrders = new Set(btn.dataset.dispatchOrderAll === "prod" ? dispatchOrderIds : []);
+      render();
+    }));
+    /* Перетаскивание кампаний на диаграмме Ганта: полосы двигаются «вживую»,
+       сдвиг фиксируется в локальном состоянии диспетчерской на mouseup. */
+    document.querySelectorAll(".gantt-bar").forEach((bar) => (bar.onmousedown = (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      ganttDrag = {
+        key: bar.dataset.ganttKey,
+        bar,
+        startX: e.clientX,
+        origX: Number(bar.getAttribute("x")),
+        delta: 0,
+      };
+      bar.classList.add("dragging");
+    }));
+    if (!ganttDocWired) {
+      ganttDocWired = true;
+      document.addEventListener("mousemove", (e) => {
+        if (!ganttDrag) return;
+        const svg = document.querySelector(".gantt-svg");
+        if (!svg) return;
+        const rect = svg.getBoundingClientRect();
+        const scale = rect.width ? rect.width / Number(svg.getAttribute("data-w")) : 1;
+        const wanted = ganttDrag.origX + Math.round((e.clientX - ganttDrag.startX) / (scale * GANTT.day)) * GANTT.day;
+        const maxX = Number(svg.getAttribute("data-w")) - 8 - Number(ganttDrag.bar.getAttribute("width"));
+        const nx = Math.max(GANTT.label, Math.min(wanted, maxX));
+        ganttDrag.bar.setAttribute("x", String(nx));
+        ganttDrag.delta = Math.round((nx - ganttDrag.origX) / GANTT.day);
+      });
+      document.addEventListener("mouseup", () => {
+        if (!ganttDrag) return;
+        const { key, delta } = ganttDrag;
+        ganttDrag = null;
+        if (delta) commitDispatchMove(key, delta);
+        render();
+      });
+    }
     document.querySelectorAll("[data-obsolete-mode]").forEach((btn) => (btn.onclick = () => {
       obsoleteMode = btn.dataset.obsoleteMode;
       render();
