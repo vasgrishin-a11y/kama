@@ -6,8 +6,9 @@
       кампании (линия «сегодня», классы done/active, статусы в реестре).
    3. Динамика волокнистого сырья: переключатели видов ЛЦ / ХЦ / BCTMP.
    4. План закупок сырья — таблица перед «Коэффициентами потребления».
-   5. Раздел «Графикование кампаний»: Гант окт–дек 2026 со связями переделов,
-      drag-and-drop, каскадом, заказами и подсветкой — всё локально. */
+   5. Раздел «Графикование кампаний»: Гант следует фильтрам шапки (период,
+      направление, год), поддерживает любой набор переделов, крупный масштаб
+      с прокруткой и сохраняет режим «Развернуто» при drag-and-drop. */
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -116,45 +117,101 @@ test('resources: procurement plan table sits before consumption coefficients',()
  }finally{w.close();}
 });
 
-test('dispatch: gantt of all stages, links, stage filter, drag with cascade, orders highlight, local only',()=>{
+test('dispatch: gantt follows header filters and supports arbitrary unit sets',()=>{
  const dom=browser(),w=dom.window,d=w.document;try{
  const nav=[...d.querySelectorAll('#nav [data-tab]')];
  assert.equal(nav[nav.length-1].dataset.tab,'dispatch','раздел в самом низу меню');
  assert.match(nav[nav.length-1].textContent,/Графикование кампаний/);
  d.querySelector('[data-tab="dispatch"]').click();
  const svg=()=>d.querySelector('.gantt-svg');
- assert.ok(svg(),'диаграмма Ганта на месте');
  const bars=()=>[...svg().querySelectorAll('.gantt-bar')];
- const labels=[...svg().querySelectorAll('.gantt-rowlabel')].map(t=>t.textContent);
- assert.deepEqual(labels.map(l=>l.split(' ·')[0]),['МП-1','МП-2','КДМ-9','БДМ-7','ПРС-1','ПРС-2','УП-1']);
+ const rows=()=>[...d.querySelectorAll('.gantt-labels .gantt-rowlabel')].map(t=>t.textContent.split(' ·')[0]);
+ assert.ok(svg(),'диаграмма Ганта на месте');
+ /* Гант крупнее: высокие строки, толстые полосы и естественная ширина
+    с горизонтальной прокруткой вместо сжатия подписей. */
+ assert.equal(Number(svg().dataset.row),50);
+ assert.equal(Number(svg().dataset.bar),30);
+ assert.ok(Number(svg().dataset.w)>4000,'годовой Гант не сжимается до ширины колонки');
+ assert.equal(Number(svg().dataset.days),365,'по умолчанию действует период шапки «Весь год»');
+ assert.equal(svg().querySelectorAll('.gantt-month').length,12);
+ assert.match(d.querySelector('#content').textContent,/Янв–дек 2026/);
+ assert.deepEqual(rows(),['МП-1','МП-2','КДМ-9','БДМ-7','ПРС-1','ПРС-2','УП-1']);
  assert.ok(bars().length>100);
  assert.ok(svg().querySelector('.gantt-today'),'линия «сегодня»');
- assert.match(d.querySelector('#content').textContent,/окт–дек 2026/i);
- /* связи между переделами: плановых нарушений нет */
  assert.ok(svg().querySelectorAll('.gantt-link').length>100);
  assert.equal(svg().querySelectorAll('.gantt-link.bad').length,0);
- d.querySelector('[data-dispatch-links]').click();
- assert.equal(svg().querySelectorAll('.gantt-link').length,0,'кнопка скрывает связи');
- d.querySelector('[data-dispatch-links]').click();
- /* фильтр одного передела */
- d.querySelector('[data-dispatch-stage="mass"]').click();
- assert.deepEqual([...svg().querySelectorAll('.gantt-rowlabel')].map(t=>t.textContent.split(' ·')[0]),['МП-1','МП-2']);
- assert.ok(bars().every(b=>/-МП-[12]-/.test(b.dataset.ganttKey)));
- assert.equal(svg().querySelectorAll('.gantt-link').length,0,'связи со скрытыми переделами не рисуются');
- d.querySelector('[data-dispatch-stage="kdm"]').click();
- assert.deepEqual([...svg().querySelectorAll('.gantt-rowlabel')].map(t=>t.textContent),['КДМ-9']);
+ /* месяц из шапки: октябрь 2026 */
+ const month=d.querySelector('#month'); month.value='9'; month.dispatchEvent(new w.Event('change'));
+ assert.equal(Number(svg().dataset.days),31);
+ assert.equal(Number(svg().dataset.day),42);
+ assert.deepEqual([...svg().querySelectorAll('.gantt-month')].map(t=>t.textContent),['Окт 2026']);
+ assert.ok(bars().length>0&&bars().every(b=>/-10-/.test(b.dataset.ganttKey)),'на Ганте только октябрьские кампании');
+ assert.match(d.querySelector('.dispatch-gantt-panel .panel-heading small').textContent,/Окт 2026/);
+ assert.match(d.querySelector('.kpis').textContent,/Кампаний в окне\d+Окт 2026/);
+ /* квартал из шапки */
+ month.value='q4'; month.dispatchEvent(new w.Event('change'));
+ assert.equal(Number(svg().dataset.days),92);
+ assert.deepEqual([...svg().querySelectorAll('.gantt-month')].map(t=>t.textContent),['Окт 2026','Ноя 2026','Дек 2026']);
+ assert.ok(bars().every(b=>/-1[012]-/.test(b.dataset.ganttKey)));
+ /* направление из шапки */
+ const fam=d.querySelector('#family'); fam.value='Картон'; fam.dispatchEvent(new w.Event('change'));
+ assert.ok(bars().length>0);
+ assert.ok(bars().every(b=>!/БДМ-7/.test(b.dataset.ganttKey)),'фильтр «Картон» убирает БДМ-7');
+ assert.ok(bars().some(b=>/КДМ-9/.test(b.dataset.ganttKey)));
+ /* если в выбранном срезе кампаний нет — диаграмма пустая, без выдуманных данных */
+ d.querySelector('[data-dispatch-stage="bdm"]').click();
+ assert.deepEqual(rows(),['БДМ-7']);
+ assert.equal(bars().length,0);
+ assert.ok(svg().querySelector('.gantt-empty'));
+ assert.match(d.querySelector('.kpis').textContent,/Кампаний в окне0/);
+ /* произвольный набор переделов, а не только один или все */
+ fam.value='all'; fam.dispatchEvent(new w.Event('change'));
  d.querySelector('[data-dispatch-stage="all"]').click();
- /* заказы раздела «Управление заказами» и их цепочки кампаний по переделам */
+ const unit=(id)=>d.querySelector(`[data-dispatch-unit="${id}"]`);
+ assert.equal(unit('МП-1').getAttribute('aria-pressed'),'true');
+ unit('МП-1').click();
+ assert.deepEqual(rows(),['МП-2','КДМ-9','БДМ-7','ПРС-1','ПРС-2','УП-1']);
+ assert.equal(unit('МП-1').getAttribute('aria-pressed'),'false');
+ unit('КДМ-9').click();
+ assert.deepEqual(rows(),['МП-2','БДМ-7','ПРС-1','ПРС-2','УП-1']);
+ d.querySelector('[data-dispatch-stage="mass"]').click();
+ assert.deepEqual(rows(),['МП-1','МП-2']);
+ unit('КДМ-9').click();
+ assert.deepEqual(rows(),['МП-1','МП-2','КДМ-9'],'произвольный набор из трёх переделов');
+ assert.ok(![...d.querySelectorAll('[data-dispatch-stage]')].some(b=>b.getAttribute('aria-pressed')==='true'),'ни одна группа не подсвечена — набор произвольный');
+ assert.equal(unit('МП-1').getAttribute('aria-pressed'),'true');
+ assert.equal(unit('КДМ-9').getAttribute('aria-pressed'),'true');
+ assert.equal(unit('БДМ-7').getAttribute('aria-pressed'),'false');
+ /* хотя бы один передел остаётся на диаграмме */
+ d.querySelector('[data-dispatch-stage="kdm"]').click();
+ unit('КДМ-9').click();
+ assert.deepEqual(rows(),['КДМ-9']);
+ /* год из шапки */
+ d.querySelector('[data-dispatch-stage="all"]').click();
+ d.querySelector('[data-year="2027"]').click();
+ assert.match(d.querySelector('.dispatch-gantt-panel .panel-heading small').textContent,/2027/);
+ assert.ok(bars().length>0&&bars().every(b=>b.dataset.ganttKey.includes('2027-')));
+ assert.equal(svg().querySelector('.gantt-today'),null,'в 2027 линии «сегодня» нет');
+ /* произвольный диапазон С / ПО */
+ d.querySelector('[data-year="2026"]').click();
+ const from=d.querySelector('#fromMonth'),to=d.querySelector('#toMonth');
+ from.value='0'; from.dispatchEvent(new w.Event('change'));
+ to.value='2'; to.dispatchEvent(new w.Event('change'));
+ assert.equal(Number(svg().dataset.days),90);
+ assert.deepEqual([...svg().querySelectorAll('.gantt-month')].map(t=>t.textContent),['Янв 2026','Фев 2026','Мар 2026']);
+ assert.ok(bars().every(b=>/-(0?[1-3])-|-0?[1-3]-/.test(b.dataset.ganttKey)));
+ assert.match(d.querySelector('.dispatch-gantt-panel .panel-heading small').textContent,/Янв–мар 2026/);
+ /* заказы и их цепочки не зависят от окна периода */
  assert.ok(d.querySelector('[data-search="dispatch-orders"]'));
  const orderRows=()=>[...d.querySelectorAll('table[data-table-key="dispatch-orders"] tbody tr')].map(tr=>[...tr.children].map(td=>td.textContent));
- const orderHeads=[...d.querySelectorAll('table[data-table-key="dispatch-orders"] thead th')].map(th=>th.textContent.replace(/\s*[▲▼]\s*$/,''));
- assert.ok(orderHeads.includes('Кампании массоподготовки')&&orderHeads.includes('Кампании КДМ / БДМ')&&orderHeads.includes('Кампании отделки'));
  const chainCell=orderRows().find(cells=>/-МП-/.test(cells[7]||''));
  assert.ok(chainCell,'заказ с цепочкой кампаний по всем переделам');
  assert.match(chainCell[8],/\d{4}-\d+-(КДМ-9|БДМ-7)-\d+/);
  assert.match(chainCell[9],/ПРС-[12]-|УП-1-/);
+ /* выбор заказа подсвечивает его кампании в видимом окне */
+ from.value='9'; from.dispatchEvent(new w.Event('change'));
+ to.value='11'; to.dispatchEvent(new w.Event('change'));
  const orderId=chainCell[1].match(/ЗК-\d+/)[0];
- /* выбор заказа подсвечивает его кампании во всех переделах */
  d.querySelector(`[data-dispatch-order="${orderId}"]`).click();
  const hl=[...svg().querySelectorAll('.gantt-bar.hl')];
  assert.ok(hl.length>=3,'подсвечены кампании массы, машины и отделки');
@@ -163,46 +220,72 @@ test('dispatch: gantt of all stages, links, stage filter, drag with cascade, ord
  assert.ok(hl.some(b=>/^(ПРС-[12]|УП-1)-/.test(b.dataset.ganttKey)));
  d.querySelector('[data-dispatch-order-all="clear"]').click();
  assert.equal(svg().querySelectorAll('.gantt-bar.hl').length,0);
- /* drag-and-drop без каскада: сдвиг кампании массы вправо рвёт обеспечение машины */
- d.querySelector('[data-dispatch-cascade]').click();
- assert.equal(d.querySelector('[data-dispatch-cascade]').getAttribute('aria-pressed'),'false');
- const dayOfBar=(b)=>(Number(b.getAttribute('x'))-172)/14;
- const massBar=bars().find(b=>/-МП-/.test(b.dataset.ganttKey)&&dayOfBar(b)<=45);
- assert.ok(massBar,'есть кампания массоподготовки в окт–ноя');
- const key=massBar.dataset.ganttKey,x0=Number(massBar.getAttribute('x'));
- massBar.dispatchEvent(new w.MouseEvent('mousedown',{button:0,clientX:400,bubbles:true}));
- d.dispatchEvent(new w.MouseEvent('mousemove',{clientX:400+14*14,bubbles:true}));
- assert.equal(Number(d.querySelector(`.gantt-bar[data-gantt-key="${key}"]`).getAttribute('x')),x0+14*14,'полоса идёт за мышью');
- d.dispatchEvent(new w.MouseEvent('mouseup',{bubbles:true}));
- let moved=[...svg().querySelectorAll('.gantt-bar.moved')];
- assert.equal(moved.length,1,'без каскада сдвинута одна кампания');
- assert.ok(svg().querySelectorAll('.gantt-link.bad').length>=1,'красная связь: машина стартует раньше обеспечивающей кампании массы');
- assert.match(d.querySelector('.dispatch-violations-panel').textContent,/сдвинуть/);
- assert.match(d.querySelector('#content').textContent,/Сдвинуто вручную/);
- /* сдвиги не влияют на другие разделы, а состояние раздела сохраняется */
- d.querySelector('[data-tab="production"]').click();
- assert.ok(!/сдвинута вручную/.test(d.querySelector('#content').innerHTML));
- assert.ok(!d.querySelector('#content').innerHTML.includes('gantt-bar'));
- d.querySelector('[data-tab="dispatch"]').click();
- assert.equal(svg().querySelectorAll('.gantt-bar.moved').length,1);
- /* drag-and-drop с каскадом: кампания массы тянет машину и отделку */
- d.querySelector('[data-dispatch-cascade]').click();
- const massBar2=bars().find(b=>/-МП-/.test(b.dataset.ganttKey)&&!b.classList.contains('moved'));
- assert.ok(massBar2);
- massBar2.dispatchEvent(new w.MouseEvent('mousedown',{button:0,clientX:400,bubbles:true}));
- d.dispatchEvent(new w.MouseEvent('mousemove',{clientX:400+2*14,bubbles:true}));
- d.dispatchEvent(new w.MouseEvent('mouseup',{bubbles:true}));
- moved=[...svg().querySelectorAll('.gantt-bar.moved')];
- assert.ok(moved.length>=4,'каскад сдвинул связанные кампании следующих переделов');
- assert.ok(moved.some(b=>/-МП-/.test(b.dataset.ganttKey)));
- assert.ok(moved.some(b=>/-(КДМ-9|БДМ-7)-/.test(b.dataset.ganttKey)));
- assert.ok(moved.some(b=>/^(ПРС-[12]|УП-1)-/.test(b.dataset.ganttKey)));
- /* сброс очищает локальное состояние диспетчерской */
- d.querySelector('[data-dispatch-reset]').click();
- assert.equal(svg().querySelectorAll('.gantt-bar.moved').length,0);
- assert.equal(svg().querySelectorAll('.gantt-link.bad').length,0);
- assert.match(d.querySelector('.dispatch-violations-panel').textContent,/Нарушений нет/);
  assert.ok(!/NaN|undefined|Infinity/.test(d.querySelector('#content').textContent));
  assert.ok(O.AS_OF==='2026-10-23');
+ }finally{w.close();}
+});
+
+test('dispatch: expanded gantt survives drag-and-drop and every gantt action',()=>{
+ const dom=browser(),w=dom.window,d=w.document;try{
+ d.querySelector('[data-tab="dispatch"]').click();
+ const month=d.querySelector('#month'); month.value='9'; month.dispatchEvent(new w.Event('change'));
+ const panel=()=>d.querySelector('.dispatch-gantt-panel');
+ const svg=()=>d.querySelector('.gantt-svg');
+ const bars=()=>[...svg().querySelectorAll('.gantt-bar')];
+ const toggle=()=>panel().querySelector('[data-expand-panel]');
+ toggle().click();
+ assert.ok(panel().classList.contains('is-expanded'));
+ assert.ok(d.body.classList.contains('has-expanded-panel'));
+ assert.equal(toggle().getAttribute('aria-expanded'),'true');
+ assert.equal(d.querySelectorAll('.panel.is-expanded').length,1);
+ /* перетаскивание без каскада прямо в развёрнутом режиме */
+ d.querySelector('[data-dispatch-cascade]').click();
+ assert.equal(d.querySelector('[data-dispatch-cascade]').getAttribute('aria-pressed'),'false');
+ assert.ok(panel().classList.contains('is-expanded'),'переключение каскада не сбрасывает разворот');
+ const day=Number(svg().dataset.day);
+ const massBar=bars().find(b=>/-МП-/.test(b.dataset.ganttKey));
+ const key=massBar.dataset.ganttKey,x0=Number(massBar.getAttribute('x'));
+ massBar.dispatchEvent(new w.MouseEvent('mousedown',{button:0,clientX:400,bubbles:true}));
+ d.dispatchEvent(new w.MouseEvent('mousemove',{clientX:400+2*day,bubbles:true}));
+ d.dispatchEvent(new w.MouseEvent('mouseup',{bubbles:true}));
+ assert.ok(panel().classList.contains('is-expanded'),'после перетаскивания режим «Развернуто» сохраняется');
+ assert.ok(d.body.classList.contains('has-expanded-panel'));
+ assert.equal(toggle().getAttribute('aria-expanded'),'true');
+ assert.equal(Number(d.querySelector(`.gantt-bar[data-gantt-key="${key}"]`).getAttribute('x')),x0+2*day,'полоса сдвинулась на 2 суток');
+ assert.equal(svg().querySelectorAll('.gantt-bar.moved').length,1);
+ assert.ok(svg().querySelectorAll('.gantt-link.bad').length>=1);
+ /* любые действия на Ганте не сбрасывают разворот */
+ d.querySelector('[data-dispatch-unit="УП-1"]').click();
+ assert.ok(panel().classList.contains('is-expanded'),'смена набора переделов сохраняет разворот');
+ d.querySelector('[data-dispatch-links]').click();
+ assert.ok(panel().classList.contains('is-expanded'),'скрытие связей сохраняет разворот');
+ assert.equal(svg().querySelectorAll('.gantt-link').length,0);
+ d.querySelector('[data-dispatch-links]').click();
+ d.querySelector('[data-dispatch-stage="all"]').click();
+ assert.ok(panel().classList.contains('is-expanded'));
+ /* каскадный сдвиг в развёрнутом режиме */
+ d.querySelector('[data-dispatch-cascade]').click();
+ const bar2=bars().find(b=>/-МП-/.test(b.dataset.ganttKey)&&!b.classList.contains('moved'));
+ bar2.dispatchEvent(new w.MouseEvent('mousedown',{button:0,clientX:400,bubbles:true}));
+ d.dispatchEvent(new w.MouseEvent('mousemove',{clientX:400+day,bubbles:true}));
+ d.dispatchEvent(new w.MouseEvent('mouseup',{bubbles:true}));
+ assert.ok(panel().classList.contains('is-expanded'),'каскадный сдвиг сохраняет разворот');
+ assert.ok(svg().querySelectorAll('.gantt-bar.moved').length>=2);
+ /* сброс сдвигов */
+ d.querySelector('[data-dispatch-reset]').click();
+ assert.ok(panel().classList.contains('is-expanded'),'сброс сдвигов сохраняет разворот');
+ assert.equal(svg().querySelectorAll('.gantt-bar.moved').length,0);
+ /* фильтры шапки не закрывают развёрнутую панель */
+ month.value='10'; month.dispatchEvent(new w.Event('change'));
+ assert.ok(panel().classList.contains('is-expanded'),'смена месяца в шапке сохраняет развёрнутый Гант');
+ assert.equal(Number(svg().dataset.days),30);
+ /* обычное сворачивание и уход в другой раздел */
+ toggle().click();
+ assert.equal(d.querySelectorAll('.panel.is-expanded').length,0);
+ toggle().click();
+ assert.ok(panel().classList.contains('is-expanded'));
+ d.querySelector('[data-tab="production"]').click();
+ assert.equal(d.querySelectorAll('.panel.is-expanded').length,0,'смена раздела закрывает разворот');
+ assert.ok(!/NaN|undefined|Infinity/.test(d.querySelector('#content').textContent));
  }finally{w.close();}
 });

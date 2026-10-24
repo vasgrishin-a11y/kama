@@ -2835,32 +2835,69 @@ body.has-expanded-panel::before {
 .campaign-month small .now-note { color: #e02442; white-space: nowrap; }
 .mass-legend .now-swatch { width: 2px !important; height: 14px !important; background: #e02442 !important; border-radius: 0 !important; }
 
-/* ── Графикование кампаний производства: диаграмма Ганта (диспетчерская) ── */
-.gantt-scroll { overflow-x: auto; }
-.gantt-scroll svg.gantt-svg { min-width: 1240px; }
+/* ── Графикование кампаний производства: диаграмма Ганта (диспетчерская) ──
+   Диаграмма рисуется в естественном размере, подобранном под длину периода,
+   поэтому подписи и полосы не уменьшаются до нечитаемого масштаба: при
+   нехватке ширины появляется горизонтальная прокрутка, а подписи переделов
+   остаются в отдельной неподвижной колонке. */
+.gantt-wrap { display: flex; align-items: stretch; border: 1px solid #e3e9ef; border-radius: 8px; overflow: hidden; background: #fff; }
+.gantt-labels { flex: 0 0 var(--gantt-label, 230px); min-width: 0; border-right: 1px solid #dbe3ec; background: #fff; }
+.gantt-labels-head { display: flex; align-items: flex-end; height: var(--gantt-head, 88px); padding: 0 14px 10px; box-sizing: border-box; color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .9px; border-bottom: 1px solid #eef2f7; }
+.gantt-labels .gantt-rowlabel { display: flex; align-items: center; height: var(--gantt-row, 50px); padding: 0 14px; box-sizing: border-box; overflow: hidden; color: #33445e; font-size: 13px; font-weight: 700; line-height: 1.2; white-space: nowrap; text-overflow: ellipsis; }
+.gantt-labels .gantt-rowlabel.alt { background: #f8fafc; }
+.gantt-labels .gantt-rowlabel[data-gantt-unit="МП-1"],
+.gantt-labels .gantt-rowlabel[data-gantt-unit="МП-2"] { box-shadow: inset 4px 0 #8b5cf6; }
+.gantt-labels .gantt-rowlabel[data-gantt-unit="КДМ-9"] { box-shadow: inset 4px 0 #4769ff; }
+.gantt-labels .gantt-rowlabel[data-gantt-unit="БДМ-7"] { box-shadow: inset 4px 0 #19a27b; }
+.gantt-labels .gantt-rowlabel[data-gantt-unit="ПРС-1"],
+.gantt-labels .gantt-rowlabel[data-gantt-unit="ПРС-2"],
+.gantt-labels .gantt-rowlabel[data-gantt-unit="УП-1"] { box-shadow: inset 4px 0 #ff8c00; }
+.gantt-scroll { flex: 1 1 auto; min-width: 0; padding: 0; overflow-x: auto; overscroll-behavior-x: contain; }
+/* Диаграмма рисуется в естественном масштабе: подписи строк и полосы не
+   уменьшаются, а лишняя ширина уходит в горизонтальную прокрутку. */
+.gantt-scroll svg.gantt-svg { display: block; width: auto; height: auto; max-width: none; }
+.panel.is-expanded .chart-scroll.gantt-scroll svg.gantt-svg { width: auto; height: auto; min-width: 0; min-height: 0; }
+@media (max-width: 760px) {
+  .gantt-labels { flex: 0 0 150px; }
+  .gantt-labels .gantt-rowlabel { padding: 0 9px; font-size: 11px; }
+  .gantt-labels-head { padding: 0 9px 8px; }
+}
 .gantt-weekend { fill: #f5f7fa; }
 .gantt-grid { stroke: #edf1f5; stroke-width: 1; }
-.gantt-grid.month { stroke: #b9c4d2; }
-.gantt-day { fill: #93a0b4; font-size: 8px; }
-.gantt-month { fill: #3452d1; font-size: 11px; font-weight: 700; letter-spacing: .4px; }
+.gantt-grid.month { stroke: #b9c4d2; stroke-width: 1.2; }
+.gantt-day { fill: #7b889c; font-size: 10px; }
+.gantt-month { fill: #3452d1; font-size: 14px; font-weight: 700; letter-spacing: .4px; }
 .gantt-rowbg { fill: #fff; }
 .gantt-rowbg.alt { fill: #f8fafc; }
-.gantt-rowlabel { fill: #33445e; font-size: 10px; font-weight: 700; }
-.gantt-today { stroke: #e02442; stroke-width: 1.5; stroke-dasharray: 5 4; }
-.gantt-today-label { fill: #e02442; font-size: 9px; font-weight: 700; }
-.gantt-link { fill: none; stroke: #8fa2c9; stroke-width: 1.3; opacity: .9; }
-.gantt-link.bad { stroke: #e02442; stroke-width: 2; stroke-dasharray: 4 3; opacity: 1; }
-.gantt-bar { cursor: grab; stroke: rgba(255, 255, 255, .65); stroke-width: 1; }
+.gantt-rowlabel { fill: #33445e; font-size: 13px; font-weight: 700; }
+.gantt-today { stroke: #e02442; stroke-width: 1.8; stroke-dasharray: 6 4; }
+.gantt-today-label { fill: #e02442; font-size: 10px; font-weight: 700; }
+.gantt-link { fill: none; stroke: #8fa2c9; stroke-width: 1.6; opacity: .9; }
+.gantt-link.bad { stroke: #e02442; stroke-width: 2.4; stroke-dasharray: 5 3; opacity: 1; }
+.gantt-bar { cursor: grab; stroke: rgba(255, 255, 255, .7); stroke-width: 1.2; }
 .gantt-bar:hover { filter: brightness(1.08); }
 .gantt-bar.dragging { cursor: grabbing; opacity: .85; }
-.gantt-bar.moved { stroke: #27364a; stroke-width: 1.6; stroke-dasharray: 4 2; }
-.gantt-bar.hl { stroke: #ed0084; stroke-width: 2.4; }
-.gantt-barlabel { fill: #fff; font-size: 8px; pointer-events: none; opacity: .92; }
+.gantt-bar.moved { stroke: #27364a; stroke-width: 2; stroke-dasharray: 4 2; }
+.gantt-bar.hl { stroke: #ed0084; stroke-width: 3; }
+.gantt-barlabel { fill: #fff; font-size: 11px; font-weight: 600; pointer-events: none; opacity: .95; }
+.gantt-empty { fill: #7b889c; font-size: 13px; font-weight: 600; }
+.gantt-legend { font-size: 11px; }
 .gantt-legend .gantt-moved-swatch { background: #fff !important; border: 1.5px dashed #27364a; height: 10px !important; border-radius: 3px !important; }
 .gantt-legend .gantt-hl-swatch { background: #fff !important; border: 2px solid #ed0084; height: 10px !important; border-radius: 3px !important; }
 .gantt-legend .gantt-link-swatch { background: #8fa2c9 !important; height: 2px !important; border-radius: 0 !important; }
 .gantt-legend .gantt-bad-swatch { background: #e02442 !important; height: 2px !important; border-radius: 0 !important; }
-.dispatch-toolbar { flex-wrap: wrap; }
+.dispatch-toolbar { flex-wrap: wrap; align-items: flex-start; }
+.dispatch-filter-row { display: flex; flex: 1 1 100%; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-width: 0; }
+.dispatch-unit-switch { align-items: center; }
+.dispatch-units-label { font-size: 9px; letter-spacing: .9px; color: var(--muted); font-weight: 700; }
+.dispatch-unit-switch button { min-height: 30px; padding: 6px 9px; font-size: 10px; font-variant-numeric: tabular-nums; }
+.dispatch-unit-switch button[data-dispatch-unit="МП-1"],
+.dispatch-unit-switch button[data-dispatch-unit="МП-2"] { border-left: 4px solid #8b5cf6; }
+.dispatch-unit-switch button[data-dispatch-unit="КДМ-9"] { border-left: 4px solid #4769ff; }
+.dispatch-unit-switch button[data-dispatch-unit="БДМ-7"] { border-left: 4px solid #19a27b; }
+.dispatch-unit-switch button[data-dispatch-unit="ПРС-1"],
+.dispatch-unit-switch button[data-dispatch-unit="ПРС-2"],
+.dispatch-unit-switch button[data-dispatch-unit="УП-1"] { border-left: 4px solid #ff8c00; }
 .dispatch-reset[disabled] { opacity: .45; cursor: default; }
 
 /* Цветной чип конкретной рецептуры волокна в реестре кампаний массы. */
