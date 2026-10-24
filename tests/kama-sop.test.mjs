@@ -51,7 +51,8 @@ test('S&OP UI: every section and filter renders without DB or browser errors',()
 });
 test('S&OP UI: search, pagination, scenario comparison, custom copy and Excel export',()=>{
  const dom=browser(),w=dom.window,d=w.document;try{
- d.querySelector('[data-tab="production"]').click();d.querySelector('[data-page="campaigns-mass"][data-step="1"]').click();assert.match(d.querySelector('#content').textContent,/2 \/ 12/);
+ d.querySelector('[data-tab="production"]').click();d.querySelector('[data-page="campaigns-mass"][data-step="1"]').click();
+ const regPager=d.querySelector('[data-search="campaigns-mass"]').closest('.panel').querySelector('.pager span');assert.match(regPager.textContent.trim(),/^2 \/ \d+$/);
  const search=d.querySelector('[data-search="campaigns-mass"]');search.value='pharma';search.dispatchEvent(new w.Event('input'));assert.match(d.querySelector('#content').textContent,/Pharma/);
  d.querySelector('#demand-input').value='110';d.querySelector('#cost-input').value='120';d.querySelector('#repair-input').value='100';d.querySelector('#editor').close=()=>{};
  d.querySelector('#scenario-name').value='Тестовый сценарий';d.querySelector('#editor-form').dispatchEvent(new w.Event('submit',{cancelable:true}));assert.equal(d.querySelector('#scenario').value,'custom');assert.equal(d.querySelector('#scenario option:checked').textContent,'Тестовый сценарий');assert.equal(JSON.parse(w.localStorage.getItem('kama_sop_customs_v2'))[0].name,'Тестовый сценарий');
@@ -64,22 +65,32 @@ test('S&OP UI: campaign registry switches streams, default mass prep, stage-spec
  d.querySelector('[data-tab="production"]').click();
  const buttons=[...d.querySelectorAll('[data-registry-stream]')];assert.deepEqual(buttons.map(b=>b.dataset.registryStream),['mass','kdm','bdm','fin']);
  assert.deepEqual(buttons.map(b=>b.getAttribute('aria-pressed')),['true','false','false','false']);
+ const counts=buttons.map(b=>Number(b.textContent.match(/\((\d+)\)/)[1]));
+ assert.ok(counts.every(n=>n>0));
+ assert.ok(counts[0]<counts[1]+counts[2],'агрегация: кампаний массоподготовки меньше, чем кампаний КДМ+БДМ');
+ assert.equal(counts[3],2*(counts[1]+counts[2]),'отделка: ПРС + УП на каждую машинную кампанию');
  const heads=()=>[...d.querySelectorAll('table[data-table-key^="campaigns-"] thead th')].map(th=>th.textContent.replace(/\s*[▲▼]\s*$/,''));
  const cells=(col)=>[...d.querySelectorAll('table[data-table-key^="campaigns-"] tbody tr')].map(tr=>tr.children[col].textContent);
  assert.ok(d.querySelector('table[data-table-key="campaigns-mass"]'));
- assert.ok(heads().includes('Рецепт массы: ЛЦ / ХЦ / BCTMP'));assert.ok(heads().includes('Снабжает'));assert.ok(heads().includes('Волокно, т абс. сух.'));assert.ok(!heads().includes('Брутто, т'));
- assert.ok(cells(2).every(v=>v==='МП-1'||v==='МП-2'));assert.ok(cells(9).every(v=>v==='КДМ-9'||v==='БДМ-7'));
- assert.match(cells(5)[0],/^\d+([.,]\d+)?% \/ \d+([.,]\d+)?% \/ \d+([.,]\d+)?%$/);
+ assert.ok(heads().includes('Рецептура массы'));assert.ok(heads().includes('Покрывает кампании'));assert.ok(heads().includes('Снабжает'));assert.ok(heads().includes('Статус'));assert.ok(!heads().includes('Брутто, т'));
+ assert.ok(cells(2).every(v=>v==='МП-1'||v==='МП-2'));
+ assert.ok(cells(3).every(v=>['Мелованная масса GC','Мелованная масса LWC','BCTMP-пухлая масса','Немелованная офсетная масса'].includes(v)));
+ assert.match(cells(4)[0],/^\d+([.,]\d+)?% \/ \d+([.,]\d+)?% \/ \d+([.,]\d+)?%$/);
+ assert.ok(cells(8).every(v=>/^\d{4}-\d+-(КДМ-9|БДМ-7)-\d+( \+ \d+)* \(\d+\)$/.test(v)));
+ assert.ok(cells(8).some(v=>Number(v.match(/\((\d+)\)$/)[1])>=2),'есть кампании массы, покрывающие ≥2 кампаний машины');
+ assert.ok(cells(11).every(v=>v==='КДМ-9'||v==='БДМ-7'));
+ assert.ok(cells(16).every(v=>['Факт','План','Идёт сейчас','Выполнена'].includes(v)));
+ assert.ok(cells(16).includes('Факт'),'янв–сен 2026 — факт');
  d.querySelector('[data-registry-stream="kdm"]').click();
  assert.equal(d.querySelector('[data-registry-stream="kdm"]').getAttribute('aria-pressed'),'true');
  assert.ok(d.querySelector('table[data-table-key="campaigns-kdm"]'));
- assert.ok(heads().includes('Брутто, т'));assert.ok(heads().includes('Обрезь, т'));assert.ok(!heads().includes('Снабжает'));
+ assert.ok(heads().includes('Брутто, т'));assert.ok(heads().includes('Обрезь, т'));assert.ok(heads().includes('Статус'));assert.ok(!heads().includes('Снабжает'));
  assert.ok(cells(2).every(v=>v==='КДМ-9'));
  d.querySelector('[data-registry-stream="bdm"]').click();
  assert.ok(d.querySelector('table[data-table-key="campaigns-bdm"]'));assert.ok(cells(2).every(v=>v==='БДМ-7'));
  d.querySelector('[data-registry-stream="fin"]').click();
  assert.ok(d.querySelector('table[data-table-key="campaigns-fin"]'));
- assert.ok(heads().includes('Источник'));assert.ok(heads().includes('Годный, т'));assert.ok(!heads().includes('Брутто, т'));
+ assert.ok(heads().includes('Источник'));assert.ok(heads().includes('Годный, т'));assert.ok(heads().includes('Статус'));assert.ok(!heads().includes('Брутто, т'));
  assert.ok(cells(2).every(v=>v==='ПРС-1'||v==='ПРС-2'||v==='УП-1'));assert.ok(cells(5).every(v=>v==='КДМ-9'||v==='БДМ-7'));
  assert.ok(!/NaN|undefined|Infinity/.test(d.querySelector('#content').textContent));
  }finally{w.close();}

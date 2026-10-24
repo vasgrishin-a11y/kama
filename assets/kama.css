@@ -2826,3 +2826,42 @@ body.has-expanded-panel::before {
 .overview-source button[aria-pressed="true"] small { color: #e5eaff; }
 .overview-source button:focus-visible { outline: 2px solid #04143a; outline-offset: -3px; }
 .overview-empty { display: grid; place-items: center; min-height: 180px; padding: 16px; border: 1px dashed #dce4ea; border-radius: 10px; background: #fafbfd; color: var(--muted); font-size: 12px; text-align: center; }
+
+/* ── Кампании: статус «сегодня» (октябрь 2026) и рецептуры массоподготовки ── */
+.campaign-month .timeline { position: relative; }
+.timeline .now-line { position: absolute; top: -3px; bottom: -3px; width: 2px; background: #e02442; z-index: 3; pointer-events: none; border-radius: 1px; }
+.campaign-month .timeline i.done { opacity: .42; }
+.campaign-month .timeline i.active { outline: 2px solid #e02442; outline-offset: -2px; position: relative; z-index: 2; }
+.campaign-month small .now-note { color: #e02442; white-space: nowrap; }
+.mass-legend .now-swatch { width: 2px !important; height: 14px !important; background: #e02442 !important; border-radius: 0 !important; }
+
+/* ── Графикование кампаний производства: диаграмма Ганта (диспетчерская) ── */
+.gantt-scroll { overflow-x: auto; }
+.gantt-scroll svg.gantt-svg { min-width: 1240px; }
+.gantt-weekend { fill: #f5f7fa; }
+.gantt-grid { stroke: #edf1f5; stroke-width: 1; }
+.gantt-grid.month { stroke: #b9c4d2; }
+.gantt-day { fill: #93a0b4; font-size: 8px; }
+.gantt-month { fill: #3452d1; font-size: 11px; font-weight: 700; letter-spacing: .4px; }
+.gantt-rowbg { fill: #fff; }
+.gantt-rowbg.alt { fill: #f8fafc; }
+.gantt-rowlabel { fill: #33445e; font-size: 10px; font-weight: 700; }
+.gantt-today { stroke: #e02442; stroke-width: 1.5; stroke-dasharray: 5 4; }
+.gantt-today-label { fill: #e02442; font-size: 9px; font-weight: 700; }
+.gantt-link { fill: none; stroke: #8fa2c9; stroke-width: 1.3; opacity: .9; }
+.gantt-link.bad { stroke: #e02442; stroke-width: 2; stroke-dasharray: 4 3; opacity: 1; }
+.gantt-bar { cursor: grab; stroke: rgba(255, 255, 255, .65); stroke-width: 1; }
+.gantt-bar:hover { filter: brightness(1.08); }
+.gantt-bar.dragging { cursor: grabbing; opacity: .85; }
+.gantt-bar.moved { stroke: #27364a; stroke-width: 1.6; stroke-dasharray: 4 2; }
+.gantt-bar.hl { stroke: #ed0084; stroke-width: 2.4; }
+.gantt-barlabel { fill: #fff; font-size: 8px; pointer-events: none; opacity: .92; }
+.gantt-legend .gantt-moved-swatch { background: #fff !important; border: 1.5px dashed #27364a; height: 10px !important; border-radius: 3px !important; }
+.gantt-legend .gantt-hl-swatch { background: #fff !important; border: 2px solid #ed0084; height: 10px !important; border-radius: 3px !important; }
+.gantt-legend .gantt-link-swatch { background: #8fa2c9 !important; height: 2px !important; border-radius: 0 !important; }
+.gantt-legend .gantt-bad-swatch { background: #e02442 !important; height: 2px !important; border-radius: 0 !important; }
+.dispatch-toolbar { flex-wrap: wrap; }
+.dispatch-reset[disabled] { opacity: .45; cursor: default; }
+
+/* Цветной чип конкретной рецептуры волокна в реестре кампаний массы. */
+.recipe-chip { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
