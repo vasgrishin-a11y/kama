@@ -2874,7 +2874,18 @@ body.has-expanded-panel::before {
 .gantt-today-label { fill: #e02442; font-size: 10px; font-weight: 700; }
 .gantt-link { fill: none; stroke: #8fa2c9; stroke-width: 1.6; opacity: .9; }
 .gantt-link.bad { stroke: #e02442; stroke-width: 2.4; stroke-dasharray: 5 3; opacity: 1; }
-.gantt-bar { cursor: grab; stroke: rgba(255, 255, 255, .7); stroke-width: 1.2; }
+/* Переход занимает свой точный временной интервал между кампаниями.
+   Янтарная диагональная штриховка хорошо читается и на цветных, и на серых
+   участках, но не конкурирует с основными полосами выпуска. */
+.gantt-changeover { cursor: pointer; stroke: #c87500; stroke-width: 1.2; shape-rendering: geometricPrecision; }
+.gantt-changeover:hover, .gantt-changeover:focus { stroke: #8a4f00; stroke-width: 2; outline: none; filter: brightness(1.03); }
+.gantt-changeover.done { opacity: .5; }
+.gantt-changeover.dim { opacity: .18; }
+.gantt-changeover.moved { stroke: #27364a; stroke-width: 2; stroke-dasharray: 3 2; }
+.gantt-changeover.hl { stroke: #ed0084; stroke-width: 3; }
+.gantt-changeover.rel { stroke: #04143a; stroke-width: 2.4; }
+.gantt-changeover.focus { stroke: #04143a; stroke-width: 3.4; }
+.gantt-bar { cursor: grab; stroke: rgba(255, 255, 255, .7); stroke-width: 1.2; shape-rendering: geometricPrecision; }
 .gantt-bar:hover { filter: brightness(1.08); }
 .gantt-bar.dragging { cursor: grabbing; opacity: .85; }
 .gantt-bar.moved { stroke: #27364a; stroke-width: 2; stroke-dasharray: 4 2; }
@@ -2888,6 +2899,7 @@ body.has-expanded-panel::before {
 .gantt-barlabel { fill: #fff; font-size: 11px; font-weight: 600; pointer-events: none; opacity: .95; }
 .gantt-empty { fill: #7b889c; font-size: 13px; font-weight: 600; }
 .gantt-legend { font-size: 11px; }
+.gantt-legend .gantt-changeover-swatch { background: repeating-linear-gradient(55deg, #fff7df 0 4px, #f4b740 4px 7px) !important; border: 1px solid #c87500; height: 10px !important; border-radius: 3px !important; }
 .gantt-legend .gantt-moved-swatch { background: #fff !important; border: 1.5px dashed #27364a; height: 10px !important; border-radius: 3px !important; }
 .gantt-legend .gantt-hl-swatch { background: #fff !important; border: 2px solid #ed0084; height: 10px !important; border-radius: 3px !important; }
 .gantt-legend .gantt-link-swatch { background: #8fa2c9 !important; height: 2px !important; border-radius: 0 !important; }

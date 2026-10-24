@@ -296,19 +296,33 @@
             if (!byRecipe.has(key)) byRecipe.set(key, { recipe, members: [] });
             byRecipe.get(key).members.push(c);
           }
-          let seq = 0;
-          for (const group of byRecipe.values()) {
-            seq += 1;
-            const members = group.members,
-              first = members[0];
-            const setup = seq > 1 ? Math.min(1.2, (S(members, "setup") / members.length) * 0.25) : 0.5;
+          /* Рецептуры идут по сроку первой потребляющей кампании. Даже если
+             несколько партий нужны одновременно, один агрегат готовит их
+             строго последовательно: базовый план не содержит физически
+             невозможных накладок. Диспетчер по-прежнему может создать
+             накладку ручным сдвигом — её поймает проверка мощностей. */
+          const groups = [...byRecipe.values()].sort(
+            (a, b) => Math.min(...a.members.map((c) => c.start)) - Math.min(...b.members.map((c) => c.start)),
+          );
+          let cursor = 0;
+          const schedule = groups.map((group, index) => {
+            const members = group.members, first = members[0];
+            const setup = index ? Math.min(1.2, (S(members, "setup") / members.length) * 0.25) : 0.5;
             const run = S(members, unit.source) / unit.rate;
-            /* Just-in-time: партия массы готова к пуску первой покрываемой
-               кампании машины. Если агрегат перегружен, партии могут
-               перекрываться — узкое место видно, а не прячется в очередь. */
-            const begin = Math.max(0, first.start - (setup + run));
+            const begin = cursor;
+            cursor += setup + run;
+            return { group, members, first, setup, run, begin };
+          });
+          /* Если плотная очередь иначе начиналась бы позже потребителя,
+             целиком выносим её чуть раньше границы месяца. Так сохраняются и
+             последовательность агрегата, и обеспеченность следующего передела. */
+          const earlyShift = Math.min(0, ...schedule.map((item) => item.first.start - item.begin));
+          for (let index = 0; index < schedule.length; index++) {
+            const { group, members, first, setup, run } = schedule[index];
+            const seq = index + 1;
+            const begin = schedule[index].begin + earlyShift;
             const end = begin + setup + run;
-            elapsed += setup + run;
+            elapsed = end;
             setupTotal += setup;
             runTotal += run;
             campaigns.push({
@@ -374,8 +388,8 @@
           available,
           setup: setupTotal,
           run: runTotal,
-          used: elapsed,
-          load: elapsed / available,
+          used: setupTotal + runTotal,
+          load: (setupTotal + runTotal) / available,
         });
       }
     }
@@ -1269,19 +1283,22 @@
     dispatchStructure = { byId, downstream };
 
     const monthOffset = new Map(win.months.map((mo) => [mo.month, mo.start]));
-    const dayOf = (c, which) => {
-      const move = dispatchMoves.get(c.id) || 0;
-      const base = which === "start" ? Math.floor(c.start / 24) : Math.ceil(c.end / 24);
-      return (monthOffset.get(c.month) || 0) + base + move;
-    };
+    /* Внутри суток сохраняем фактические часы. Прежнее округление старта вниз,
+       а окончания вверх визуально накладывало соседние кампании почти на сутки,
+       хотя исходная очередь агрегата была последовательной. */
     const hourOf = (c, which) => {
       const move = dispatchMoves.get(c.id) || 0;
       return (monthOffset.get(c.month) || 0) * 24 + (which === "start" ? c.start : c.end) + move * 24;
     };
+    const dayOf = (c, which) => hourOf(c, which) / 24;
     const dateAt = (dayIdx) => {
       const clamped = Math.max(0, Math.min(win.days - 1, dayIdx));
       const dt = new Date(win.startUTC + clamped * dayMs);
       return `${ganttPad(dt.getUTCDate())}.${ganttPad(dt.getUTCMonth() + 1)}`;
+    };
+    const dateTimeAt = (hourIdx) => {
+      const dt = new Date(win.startUTC + hourIdx * 3600000);
+      return `${ganttPad(dt.getUTCDate())}.${ganttPad(dt.getUTCMonth() + 1)} ${ganttPad(dt.getUTCHours())}:${ganttPad(dt.getUTCMinutes())}`;
     };
     /* Подсветка выбранной мышью кампании: её технологическая цепочка. */
     const focusSet = dispatchFocus && allById.has(dispatchFocus) ? dispatchNeighborhood(dispatchFocus, links) : null;
@@ -1371,24 +1388,26 @@
           });
         }
       }
-      /* Накладки ищем по фактическим часам и только там, где участвует
-         сдвинутая вручную кампания: базовая последовательность модели
-         перегрузом не считается, важны конфликты, созданные диспетчером. */
-      const ordered = [...spans].sort((a, b) => a.s - b.s);
+      /* Проверяем все фактические интервалы, а не только сдвинутые: базовый
+         план должен быть чистым, но любой ручной сдвиг сразу проявится здесь.
+         Активным считаем интервал с самым поздним окончанием — так не теряются
+         вложенные конфликты, когда одна длинная кампания накрыла несколько. */
+      const ordered = [...spans].sort((a, b) => a.s - b.s || a.e - b.e);
+      let activeSpan = ordered[0] || null;
       for (let i = 1; i < ordered.length; i++) {
-        const prev = ordered[i - 1],
-          cur = ordered[i];
-        const overlap = prev.e - cur.s;
-        if (overlap <= 0.5) continue;
-        if (!dispatchMoves.has(prev.c.id) && !dispatchMoves.has(cur.c.id)) continue;
-        capacityProblems.push({
-          kind: "overlap",
-          unit: unit.machine,
-          time: dateAt(Math.floor(cur.s / 24)),
-          hours: overlap,
-          problem: `накладка ${prev.c.id} ↔ ${cur.c.id}: ${fmt(overlap, 1)} ч`,
-          fix: `сдвинуть ${cur.c.id} вправо минимум на ${Math.ceil(overlap / 24)} сут.`,
-        });
+        const cur = ordered[i];
+        const overlap = activeSpan.e - cur.s;
+        if (overlap > 0.5) {
+          capacityProblems.push({
+            kind: "overlap",
+            unit: unit.machine,
+            time: dateAt(Math.floor(cur.s / 24)),
+            hours: overlap,
+            problem: `накладка ${activeSpan.c.id} ↔ ${cur.c.id}: ${fmt(overlap, 1)} ч`,
+            fix: `сдвинуть ${cur.c.id} вправо минимум на ${Math.ceil(overlap / 24)} сут.`,
+          });
+        }
+        if (cur.e > activeSpan.e) activeSpan = cur;
       }
       capacityRows.push({
         unit,
@@ -1432,7 +1451,7 @@
     const rowY = new Map();
     unitRows.forEach((u, i) => rowY.set(u.machine, GANTT.head + i * GANTT.row));
     let svg = `<svg class="chart gantt-svg" width="${width}" height="${height}" data-w="${width}" data-h="${height}" data-day="${day}" data-row="${GANTT.row}" data-bar="${GANTT.bar}" data-label="0" data-days="${win.days}" data-today-x="${todayX}" data-window="${esc(windowKey)}" data-focus="${esc(dispatchFocus || "")}" role="img" aria-label="Диаграмма Ганта: кампании агрегатов, ${esc(periodLabel)}"><title>Графикование кампаний производства · ${esc(periodLabel)} · гранулярность суток</title>`;
-    svg += `<defs><marker id="gantt-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" fill="#8fa2c9"/></marker><marker id="gantt-arrow-bad" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" fill="#e02442"/></marker></defs>`;
+    svg += `<defs><marker id="gantt-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" fill="#8fa2c9"/></marker><marker id="gantt-arrow-bad" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" fill="#e02442"/></marker><pattern id="gantt-changeover-pattern" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(35)"><rect width="7" height="7" fill="#fff7df"/><rect width="2.5" height="7" fill="#f4b740"/></pattern></defs>`;
     /* Строки агрегатов. */
     unitRows.forEach((unit, ri) => {
       const yTop = GANTT.head + ri * GANTT.row;
@@ -1478,15 +1497,61 @@
         svg += `<path class="gantt-link${bad ? " bad" : ""}${dim ? " dim" : ""}" marker-end="url(#gantt-arrow${bad ? "-bad" : ""})" d="M${f.x1},${f.y} C${f.x1 + bend},${f.y} ${t.x0 - bend},${t.y} ${t.x0},${t.y}"><title>${esc(l.from.id)} → ${esc(l.to.id)}${bad ? ` · нарушение: старт раньше обеспечивающей кампании на ${-l.gap} сут.` : ""}</title></path>`;
       }
     }
-    /* Полосы кампаний: перетаскивание мышью, подсветка заказов и цепочек,
+    /* Точная геометрия занятости. setup — отдельный переход перед выпуском,
+       а цветная полоса показывает только работу кампании. Поэтому соседние
+       кампании соприкасаются строго по времени и больше не перекрываются из-за
+       округления к целым суткам. */
+    const ganttItems = camps.map((c) => {
+      const occupancyStart = hourOf(c, "start");
+      const occupancyEnd = hourOf(c, "end");
+      const runStart = Math.min(occupancyEnd, occupancyStart + Math.max(0, Number(c.setup) || 0));
+      return { c, occupancyStart, runStart, occupancyEnd };
+    });
+    const previousById = new Map();
+    for (const unit of unitRows) {
+      const sequence = ganttItems
+        .filter((item) => item.c.machine === unit.machine)
+        .sort((a, b) => a.occupancyStart - b.occupancyStart || a.occupancyEnd - b.occupancyEnd);
+      sequence.forEach((item, index) => previousById.set(item.c.id, index ? sequence[index - 1] : null));
+    }
+    const clippedGeometry = (startHour, endHour) => {
+      const d0 = Math.max(0, startHour / 24), d1 = Math.min(win.days, endHour / 24);
+      if (d1 <= d0) return null;
+      return { x: xOf(d0), width: xOf(d1 - d0), d0, d1 };
+    };
+
+    /* Переходы / переналадки — янтарная штриховка между цветными кампаниями.
+       Сегмент двигается вместе со своей кампанией и имеет отдельную подсказку. */
+    for (const item of ganttItems) {
+      const { c, occupancyStart, runStart } = item;
+      const y = rowY.get(c.machine), geometry = clippedGeometry(occupancyStart, runStart);
+      if (y === undefined || !geometry) continue;
+      const previous = previousById.get(c.id);
+      const moved = dispatchMoves.has(c.id), done = campaignDone(c);
+      const inChain = !focusSet || focusSet.has(c.id);
+      const dimmed = Boolean(focusSet) && !inChain;
+      const title = previous
+        ? `Переход ${previous.c.id} → ${c.id} · ${fmt(runStart - occupancyStart, 1)} ч · ${dateTimeAt(occupancyStart)}–${dateTimeAt(runStart)}`
+        : `Пусковая настройка перед ${c.id} · ${fmt(runStart - occupancyStart, 1)} ч · ${dateTimeAt(occupancyStart)}–${dateTimeAt(runStart)}`;
+      const cls = [
+        "gantt-changeover",
+        moved ? "moved" : "",
+        done && dispatchDimDone && !focusSet ? "done" : "",
+        highlight.has(c.id) ? "hl" : "",
+        dimmed ? "dim" : "",
+        dispatchFocus === c.id ? "focus" : inChain && focusSet ? "rel" : "",
+      ].filter(Boolean).join(" ");
+      const by = y + (GANTT.row - GANTT.bar) / 2;
+      svg += `<rect class="${cls}" data-gantt-changeover="${esc(c.id)}" data-gantt-target="${esc(c.id)}" data-gantt-move="${esc(c.id)}" data-start-hour="${occupancyStart}" data-end-hour="${runStart}" x="${geometry.x}" y="${by}" width="${geometry.width}" height="${GANTT.bar}" rx="${Math.min(4, geometry.width / 2)}" fill="url(#gantt-changeover-pattern)" tabindex="0" role="button" aria-label="${esc(title)}"><title>${esc(title)}</title></rect>`;
+    }
+
+    /* Полосы выпуска: перетаскивание мышью, подсветка заказов и цепочек,
        серый цвет завершённых, ручные сдвиги. */
-    for (const c of camps) {
-      const y = rowY.get(c.machine);
-      if (y === undefined) continue;
-      const rawStart = dayOf(c, "start"), rawEnd = dayOf(c, "end");
-      if (rawEnd < 0 || rawStart > win.days) continue;
-      const d0 = Math.max(0, rawStart), d1 = Math.min(win.days, Math.max(rawEnd, d0 + 0.25));
-      const bx = xOf(d0), bw = Math.max(4, (d1 - d0) * day - 2);
+    for (const item of ganttItems) {
+      const { c, occupancyStart, runStart, occupancyEnd } = item;
+      const y = rowY.get(c.machine), geometry = clippedGeometry(runStart, occupancyEnd);
+      if (y === undefined || !geometry) continue;
+      const bx = geometry.x, bw = geometry.width;
       const by = y + (GANTT.row - GANTT.bar) / 2;
       const moved = dispatchMoves.has(c.id);
       const done = campaignDone(c);
@@ -1505,8 +1570,8 @@
       const ordersOf = ordersByCampaign.get(c.id) || [];
       const moveText = moved ? ` · сдвинута вручную на ${dispatchMoves.get(c.id) > 0 ? "+" : ""}${dispatchMoves.get(c.id)} сут.` : "";
       const focusText = !focusSet ? "" : dispatchFocus === c.id ? " · выбрана: подсвечена вся цепочка" : inChain ? " · в цепочке выбранной кампании" : " · вне цепочки выбранной кампании";
-      const title = `${c.id} · ${c.name} · ${(c.products || [c.product]).map((pid) => product(pid).name).join(", ")} · ${(c.grams || [c.gram]).join(", ")} г/м² · выпуск ${fmt(c.good)} т · ${dateAt(d0)}–${dateAt(Math.max(d0, d1 - 1))} · ${st.label}${done ? " (завершена)" : ""}${ordersOf.length ? ` · заказы: ${ordersOf.join(", ")}` : ""}${moveText}${focusText}`;
-      svg += `<rect class="${cls}" data-gantt-key="${esc(c.id)}" data-done="${done ? "1" : "0"}" x="${bx}" y="${by}" width="${bw}" height="${GANTT.bar}" rx="4" fill="${greyed ? (dimmed ? "#cfd6e1" : "#b9c2ce") : ganttColor(c)}"><title>${esc(title)}</title></rect>`;
+      const title = `${c.id} · ${c.name} · ${(c.products || [c.product]).map((pid) => product(pid).name).join(", ")} · ${(c.grams || [c.gram]).join(", ")} г/м² · выпуск ${fmt(c.good)} т · работа ${dateTimeAt(runStart)}–${dateTimeAt(occupancyEnd)} · переход перед запуском ${fmt(runStart - occupancyStart, 1)} ч · ${st.label}${done ? " (завершена)" : ""}${ordersOf.length ? ` · заказы: ${ordersOf.join(", ")}` : ""}${moveText}${focusText}`;
+      svg += `<rect class="${cls}" data-gantt-key="${esc(c.id)}" data-gantt-move="${esc(c.id)}" data-done="${done ? "1" : "0"}" data-occupancy-start-hour="${occupancyStart}" data-run-start-hour="${runStart}" data-end-hour="${occupancyEnd}" x="${bx}" y="${by}" width="${bw}" height="${GANTT.bar}" rx="${Math.min(4, bw / 2)}" fill="${greyed ? (dimmed ? "#cfd6e1" : "#b9c2ce") : ganttColor(c)}"><title>${esc(title)}</title></rect>`;
       const shortId = c.stage === "Отделка" ? c.id.slice(c.machine.length + 1).replace(/^\d{4}-\d{1,2}-/, "") : c.id.replace(/^\d{4}-\d{1,2}-/, "");
       if (bw >= shortId.length * 6 + 10) svg += `<text class="gantt-barlabel" x="${bx + 6}" y="${by + GANTT.bar / 2 + 4}">${esc(shortId)}</text>`;
     }
@@ -1528,16 +1593,16 @@
     };
     const focusLabel = focusSet
       ? `выбрана ${dispatchFocus} · в цепочке ${focusSet.size} ${plural(focusSet.size, "кампания", "кампании", "кампаний")} · остальные полосы серые`
-      : `показано ${selectedLabel} · клик по кампании подсвечивает её цепочку · перетаскивайте кампании мышью`;
+      : `показано ${selectedLabel} · янтарная штриховка — переход · клик по кампании подсвечивает её цепочку · перетаскивайте кампании мышью`;
     const toolbar = `<div class="chart-toolbar dispatch-toolbar"><div class="dispatch-filter-row"><div class="flow-switch dispatch-group-switch" role="group" aria-label="Набор агрегатов по продукту">${Object.entries(dispatchUnitGroups).map(([id, g]) => `<button type="button" data-dispatch-group="${id}" aria-pressed="${group === id}" title="${groupTitle[id]}">${g.label}</button>`).join("")}</div><div class="flow-switch" role="group" aria-label="Группы переделов на диаграмме Ганта">${Object.entries(dispatchStageFilter).map(([id, s]) => `<button type="button" data-dispatch-stage="${id}" aria-pressed="${preset === id}">${s.label}</button>`).join("")}</div><div class="flow-switch dispatch-unit-switch" role="group" aria-label="Любой набор агрегатов на диаграмме Ганта" title="Включите любое сочетание агрегатов — не только один или все"><span class="dispatch-units-label">АГРЕГАТЫ</span>${GANTT_UNITS.map((u) => `<button type="button" data-dispatch-unit="${u}" aria-pressed="${chosen.has(u)}" title="Показать / скрыть агрегат ${u}">${u}</button>`).join("")}</div></div><div class="flow-switch" role="group" aria-label="Инструменты диспетчерской"><button type="button" data-dispatch-dim-done aria-pressed="${dispatchDimDone}" title="Завершённые кампании показываются серым; отожмите кнопку, чтобы вернуть цвет">⏹ Завершённые серым</button><button type="button" data-dispatch-links aria-pressed="${dispatchLinks}" title="Линии снабжения: масса → машина → отделка">Связи между переделами</button><button type="button" data-dispatch-cascade aria-pressed="${dispatchCascade}" title="Перетаскивание кампании сдвигает связанные кампании следующих переделов тем же сдвигом">Двигать связанные вместе</button>${focusSet ? `<button type="button" data-dispatch-clear-focus>Снять выделение</button>` : ""}<button type="button" class="dispatch-reset" data-dispatch-reset ${movedCount ? "" : "disabled"}>Сбросить сдвиги${movedCount ? ` (${movedCount})` : ""}</button></div><span class="chart-context">${focusLabel}</span></div>`;
-    const legend = `<div class="flow-legend gantt-legend"><span><i style="background:#8b5cf6"></i>Массоподготовка</span><span><i style="background:#4769ff"></i>КДМ-9</span><span><i style="background:#19a27b"></i>БДМ-7</span><span><i style="background:#ff8c00"></i>Отделка</span><span><i class="gantt-done-swatch"></i>завершённые (серым)</span><span><i class="gantt-focus-swatch"></i>выбранная кампания и её цепочка</span><span><i class="gantt-moved-swatch"></i>сдвинута вручную</span><span><i class="gantt-hl-swatch"></i>кампании выбранных заказов</span><span><i class="gantt-link-swatch"></i>связь обеспеченности</span><span><i class="gantt-bad-swatch"></i>нарушение последовательности</span></div>`;
+    const legend = `<div class="flow-legend gantt-legend"><span><i style="background:#8b5cf6"></i>Массоподготовка</span><span><i style="background:#4769ff"></i>КДМ-9</span><span><i style="background:#19a27b"></i>БДМ-7</span><span><i style="background:#ff8c00"></i>Отделка</span><span><i class="gantt-changeover-swatch"></i>переход / переналадка</span><span><i class="gantt-done-swatch"></i>завершённые (серым)</span><span><i class="gantt-focus-swatch"></i>выбранная кампания и её цепочка</span><span><i class="gantt-moved-swatch"></i>сдвинута вручную</span><span><i class="gantt-hl-swatch"></i>кампании выбранных заказов</span><span><i class="gantt-link-swatch"></i>связь обеспеченности</span><span><i class="gantt-bad-swatch"></i>нарушение последовательности</span></div>`;
 
     const violationsBody = violations.length
       ? `<p class="panel-note">Красные связи — кампания следующего передела стартует раньше обеспечивающей кампании предыдущего (масса → машина → отделка). Передвиньте полосы так, чтобы связи стали серыми, или сбросьте сдвиги.</p>${table(["Связь", "Обеспечивающая кампания", "Зависимая кампания", "Старт раньше на, сут.", "Как исправить"], violations.map((v) => [v.kind === "mass" ? "Масса → машина" : "Машина → отделка", v.from.id, v.to.id, `<span class="delta-neg">${-v.gap}</span>`, `сдвинуть ${v.to.id} вправо на ${-v.gap} сут. или ${v.from.id} влево`]))}`
       : '<p class="muted">Нарушений нет: каждая кампания машины стартует не раньше обеспечивающей кампании массы, отделка — не раньше своей кампании машины.</p>';
 
     const capacityNote = capacityProblems.length
-      ? `<p class="panel-note">Проверка учитывает ручные сдвиги: занятость агрегата считается по фактическим интервалам полос на Ганте, фонд — по доступным часам месяца за вычетом плановых ремонтов. Перегрузка — кампаний больше, чем фонд; накладка — две кампании одновременно на одном агрегате.</p>`
+      ? `<p class="panel-note">Проверка учитывает переходы и ручные сдвиги: занятость агрегата считается по точным часовым интервалам на Ганте, фонд — по доступным часам месяца за вычетом плановых ремонтов. Перегрузка — кампаний больше, чем фонд; накладка — две кампании одновременно на одном агрегате.</p>`
       : '<p class="muted">Свободное место есть: ни один агрегат не перегружен, кампании не накладываются друг на друга в выбранном периоде.</p>';
     const capacityProblemsTable = capacityProblems.length
       ? table(
@@ -1583,7 +1648,7 @@
     const ordersToolbar = `<div class="chart-toolbar"><div class="flow-switch" role="group" aria-label="Подсветка заказов на диаграмме"><button type="button" data-dispatch-order-all="prod">Выделить все из производства (${dispatchOrderIds.length})</button><button type="button" data-dispatch-order-all="clear">Снять выделение</button></div><span class="chart-context">${dispatchOrders.size ? `выбрано ${dispatchOrders.size} ${plural(dispatchOrders.size, "заказ", "заказа", "заказов")} · подсвечено ${highlight.size} ${plural(highlight.size, "кампания", "кампании", "кампаний")} на Ганте` : "выберите заказ — его кампании подсветятся во всех переделах"}</span></div>`;
 
     return `<div class="kpis kpis-6">${kpi("Кампаний в окне", fmt(camps.length), "", `${periodLabel} · ${selectedLabel}`, true)}${kpi("Заказов из производства", fmt(productionOrders.length), "", `${fmt(S(productionOrders, "qty"))} т · ATP на ${orderDate(O.AS_OF)}`)}${kpi("Переходы в периоде", fmt(setupHours, 1), "ч", `цель ≤ ${fmt(setupTargetHours, 1)} ч · ${setupOverTarget ? `<span class="delta-neg">превышение ${fmt(setupHours - setupTargetHours, 1)} ч</span>` : `<span class="delta-pos">остаток ${fmt(setupTargetHours - setupHours, 1)} ч</span>`} · лучшая версия цикла, коэф. ${fmt(targetSetupCoef, 2)} · план ${fmt(planSetupCoef, 2)}`, setupOverTarget ? "alert" : "accent")}${kpi("Доля переходов в фонде", pct(setupShare), "", `цель ≤ ${pct(setupTargetShare)} · фонд ${fmt(fundHours)} ч · ${setupShare > setupTargetShare ? `<span class="delta-neg">+${fmt((setupShare - setupTargetShare) * 100, 2)} п.п.</span>` : `<span class="delta-pos">${fmt((setupTargetShare - setupShare) * 100, 2)} п.п. в запасе</span>`}`, setupShare > setupTargetShare + 1e-6 ? "alert" : "")}${kpi("Нарушений последовательности", fmt(violations.length), "связей", violations.length ? "есть накладки между переделами" : "обеспеченность соблюдена", violations.length ? "alert" : "")}${kpi("Перегрузки мощностей", fmt(capacityProblems.length), "проблем", `${overloads} перегрузок фонда · ${overlaps} накладок кампаний`, capacityProblems.length ? "alert" : "")}</div>
-      ${panel("Диаграмма Ганта · кампании по агрегатам", `${periodLabel} · ${chosen.size === GANTT_UNITS.length ? "все агрегаты" : GANTT_UNITS.filter((u) => chosen.has(u)).join(", ")} · гранулярность суток · связи масса → КДМ/БДМ → отделка`, `${toolbar}<div class="gantt-wrap" style="--gantt-head:${GANTT.head}px;--gantt-row:${GANTT.row}px;--gantt-label:${GANTT.label}px">${labels}<div class="chart-scroll gantt-scroll">${svg}</div></div>${legend}`, "dispatch-gantt-panel")}
+      ${panel("Диаграмма Ганта · кампании по агрегатам", `${periodLabel} · ${chosen.size === GANTT_UNITS.length ? "все агрегаты" : GANTT_UNITS.filter((u) => chosen.has(u)).join(", ")} · шкала по суткам, точность до часа · переходы показаны отдельно · связи масса → КДМ/БДМ → отделка`, `${toolbar}<div class="gantt-wrap" style="--gantt-head:${GANTT.head}px;--gantt-row:${GANTT.row}px;--gantt-label:${GANTT.label}px">${labels}<div class="chart-scroll gantt-scroll">${svg}</div></div>${legend}`, "dispatch-gantt-panel")}
       ${panel("Последовательность между переделами", "Проверка обеспеченности после ручных сдвигов", violationsBody, "dispatch-violations-panel")}
       ${panel("Доступность мощностей", `${periodLabel} · свободный фонд и накладки после ручных сдвигов`, `${capacityNote}${capacityProblemsTable}${capacitySummary}`, "dispatch-capacity-panel")}
       ${panel("Заказы из производства и их кампании", "Только заказы, покрываемые производством (не запасом) · в каких кампаниях агрегатов они запланированы", `${ordersToolbar}${paged("dispatch-orders", ["Выбор", "Заказ / клиент", "Продукт", "Кол-во, т", "Требуемая дата", "Покрытие", "Дата производства", "Кампании массоподготовки", "Кампании КДМ / БДМ", "Кампании отделки"], orderRows)}`, "dispatch-orders-panel")}`;
@@ -3378,11 +3443,17 @@
       bar.onmousedown = (e) => {
         if (e.button !== 0) return;
         e.preventDefault();
+        const key = bar.dataset.ganttKey;
         ganttDrag = {
-          key: bar.dataset.ganttKey,
+          key,
           bar,
           startX: e.clientX,
           origX: Number(bar.getAttribute("x")),
+          /* Переход визуально прикреплён к кампании и во время drag-and-drop
+             движется вместе с ней, а не остаётся на старом месте до mouseup. */
+          companions: [...document.querySelectorAll("[data-gantt-move]")]
+            .filter((el) => el.dataset.ganttMove === key)
+            .map((el) => ({ el, x: Number(el.getAttribute("x")) })),
           delta: 0,
         };
         bar.classList.add("dragging");
@@ -3396,9 +3467,25 @@
         render();
       };
     });
+    /* Переход выбирает ту кампанию, перед которой он выполняется. Это даёт
+       одинаковую подсветку цепочки и мышью, и с клавиатуры. */
+    document.querySelectorAll(".gantt-changeover").forEach((segment) => {
+      const select = (e) => {
+        e.stopPropagation();
+        const key = segment.dataset.ganttTarget;
+        dispatchFocus = dispatchFocus === key ? null : key;
+        render();
+      };
+      segment.onclick = select;
+      segment.onkeydown = (e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        e.preventDefault();
+        select(e);
+      };
+    });
     const ganttSvg = document.querySelector(".gantt-svg");
     if (ganttSvg) ganttSvg.onclick = (e) => {
-      if (e.target.closest(".gantt-bar") || !dispatchFocus) return;
+      if (e.target.closest(".gantt-bar, .gantt-changeover") || !dispatchFocus) return;
       dispatchFocus = null;
       render();
     };
@@ -3419,8 +3506,9 @@
         const wanted = ganttDrag.origX + Math.round((e.clientX - ganttDrag.startX) / (scale * day)) * day;
         const maxX = chartW - 8 - Number(ganttDrag.bar.getAttribute("width"));
         const nx = Math.max(label, Math.min(wanted, maxX));
-        ganttDrag.bar.setAttribute("x", String(nx));
-        ganttDrag.delta = Math.round((nx - ganttDrag.origX) / day);
+        const dx = nx - ganttDrag.origX;
+        for (const companion of ganttDrag.companions) companion.el.setAttribute("x", String(companion.x + dx));
+        ganttDrag.delta = Math.round(dx / day);
       });
       document.addEventListener("mouseup", () => {
         if (!ganttDrag) return;

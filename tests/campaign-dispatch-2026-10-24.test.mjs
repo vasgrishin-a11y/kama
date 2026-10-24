@@ -143,6 +143,26 @@ test('dispatch: gantt follows header filters, unit groups and arbitrary unit set
  assert.match(d.querySelector('#content').textContent,/Янв–дек 2026/);
  assert.deepEqual(rows(),['МП-1','МП-2','КДМ-9','БДМ-7','ПРС-1','ПРС-2','УП-1']);
  assert.ok(bars().length>100);
+ /* Базовый план на каждом агрегате строго последователен в точных часах.
+    Setup вынесен в отдельные янтарные сегменты между полосами выпуска. */
+ const sequences=new Map();
+ for(const bar of bars()){
+  const row=bar.getAttribute('y');if(!sequences.has(row))sequences.set(row,[]);
+  sequences.get(row).push({id:bar.dataset.ganttKey,start:Number(bar.dataset.occupancyStartHour),end:Number(bar.dataset.endHour)});
+ }
+ for(const sequence of sequences.values()){
+  sequence.sort((x,y)=>x.start-y.start);
+  for(let i=1;i<sequence.length;i++)assert.ok(sequence[i].start>=sequence[i-1].end-1e-7,`${sequence[i-1].id} не накладывается на ${sequence[i].id}`);
+ }
+ const changeovers=[...svg().querySelectorAll('.gantt-changeover')];
+ assert.ok(changeovers.length>100,'переходы визуализированы отдельно от кампаний');
+ assert.ok(changeovers.every(t=>Number(t.getAttribute('width'))>0));
+ assert.ok(changeovers.every(t=>/Переход|Пусковая настройка/.test(t.textContent)&&/ч/.test(t.textContent)));
+ for(const transition of changeovers){
+  const target=bars().find(bar=>bar.dataset.ganttKey===transition.dataset.ganttTarget);
+  if(target)assert.ok(Math.abs(Number(transition.getAttribute('x'))+Number(transition.getAttribute('width'))-Number(target.getAttribute('x')))<1e-6,'переход заканчивается ровно в начале выпуска');
+ }
+ assert.match(d.querySelector('.gantt-legend').textContent,/переход \/ переналадка/);
  assert.ok(svg().querySelector('.gantt-today'),'линия «сегодня»');
  assert.ok(svg().querySelectorAll('.gantt-link').length>100);
  assert.equal(svg().querySelectorAll('.gantt-link.bad').length,0);
@@ -331,10 +351,14 @@ test('dispatch: capacity availability reacts to manual campaign moves',()=>{
  const day=Number(svg().dataset.day);
  const kdmBar=[...svg().querySelectorAll('.gantt-bar')].find(b=>/-КДМ-9-/.test(b.dataset.ganttKey));
  const key=kdmBar.dataset.ganttKey,x0=Number(kdmBar.getAttribute('x'));
+ const transition=svg().querySelector(`.gantt-changeover[data-gantt-target="${key}"]`);
+ const transitionX0=Number(transition.getAttribute('x'));
  kdmBar.dispatchEvent(new w.MouseEvent('mousedown',{button:0,clientX:400,bubbles:true}));
  d.dispatchEvent(new w.MouseEvent('mousemove',{clientX:400+day,bubbles:true}));
+ assert.equal(Number(transition.getAttribute('x')),transitionX0+day,'переход движется вместе с кампанией прямо во время перетаскивания');
  d.dispatchEvent(new w.MouseEvent('mouseup',{bubbles:true}));
  assert.equal(Number(d.querySelector(`.gantt-bar[data-gantt-key="${key}"]`).getAttribute('x')),x0+day);
+ assert.equal(Number(d.querySelector(`.gantt-changeover[data-gantt-target="${key}"]`).getAttribute('x')),transitionX0+day);
  assert.match(panel().textContent,/Накладка кампаний/,'накладка двух кампаний на агрегате');
  assert.match(panel().textContent,/накладка /);
  assert.match(panel().textContent,/сдвинуть .* вправо/);
