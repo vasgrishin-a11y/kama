@@ -164,6 +164,55 @@ test("UI: demand accuracy card, segmentation ordered by gross profit with OTIF f
   }
 });
 
+test("UI: quota rows expand to their matching order table and explain the last-mile dispatch location", () => {
+  const dom = browser(), w = dom.window, d = w.document;
+  try {
+    d.querySelector('[data-tab="orders"]').click();
+    const quotaPanel = d.querySelector(".quota-panel");
+    const portfolioPanel = d.querySelector(".orders-portfolio-panel");
+    assert.ok(quotaPanel.compareDocumentPosition(portfolioPanel) & w.Node.DOCUMENT_POSITION_FOLLOWING, "график квот расположен перед портфелем");
+    assert.ok(d.querySelectorAll(".quota-entry").length > 0);
+    assert.equal(d.querySelectorAll(".quota-entry[open]").length, 0, "по умолчанию списки заказов закрыты");
+    assert.equal(quotaPanel.querySelectorAll(".quota-entry[open] .order-table").length, 0);
+
+    const plan = O.planPortfolio(M, year2026("balanced"));
+    const entry = [...d.querySelectorAll(".quota-entry")].find((item) => {
+      const [view, month, ...keyParts] = item.dataset.quotaEntry.split("|");
+      const key = keyParts.join("|");
+      const rows = view === "segment" ? plan.segmentQuotaUsage : plan.quotaUsage;
+      const quota = rows.find((row) => row.month === month && row.key === key);
+      return quota?.orders.some((order) => !plan.results.find((result) => result.orderId === order.id)?.shipped);
+    });
+    assert.ok(entry, "есть строка квоты с открытыми заказами");
+    const [view, month, ...keyParts] = entry.dataset.quotaEntry.split("|");
+    const rows = view === "segment" ? plan.segmentQuotaUsage : plan.quotaUsage;
+    const quota = rows.find((row) => row.month === month && row.key === keyParts.join("|"));
+    entry.querySelector("summary").click();
+    assert.equal(entry.open, true, "клик по строке раскрывает заказы под ней");
+
+    const detailTable = entry.querySelector(".order-table-details");
+    const detailIds = [...detailTable.querySelectorAll("tbody tr td:nth-child(2) b")].map((cell) => cell.textContent);
+    assert.deepEqual(detailIds, quota.orders.map((order) => order.id), "в раскрытии только заказы выбранного продукта/сегмента и месяца");
+    const mainTable = d.querySelector(".order-table-main");
+    const mainHeaders = [...mainTable.querySelectorAll("thead th")].map((th) => th.textContent.trim());
+    const detailHeaders = [...detailTable.querySelectorAll("thead th")].map((th) => th.textContent.trim());
+    assert.ok(mainHeaders.includes("Место отгрузки клиенту"));
+    assert.deepEqual(detailHeaders.slice(1), mainHeaders.slice(1), "раскрытие использует формат портфельной таблицы");
+    const firstResult = plan.results.find((result) => result.orderId === detailIds[0]);
+    const expectedLocation = firstResult.sourceNode === "plant" ? "Склад ГП завода" : M.nodes.find((node) => node.id === firstResult.sourceNode).name;
+    assert.equal(detailTable.querySelector("tbody tr td:nth-child(8)").textContent, expectedLocation, "показывается место отгрузки последней мили");
+
+    const selectable = detailTable.querySelector("[data-order-select]");
+    assert.ok(selectable);
+    selectable.checked = true;
+    selectable.dispatchEvent(new w.Event("change", { bubbles: true }));
+    const restored = [...d.querySelectorAll(".quota-entry")].find((item) => item.dataset.quotaEntry === entry.dataset.quotaEntry);
+    assert.equal(restored.open, true, "список остается раскрытым после выбора заказа и перерисовки");
+  } finally {
+    w.close();
+  }
+});
+
 test("UI: orders — OTIF card, quick filters, order-number filter scoped to the section, shipped facts in every table, quota views", () => {
   const dom = browser(), w = dom.window, d = w.document;
   try {
@@ -171,14 +220,14 @@ test("UI: orders — OTIF card, quick filters, order-number filter scoped to the
     const plan = O.planPortfolio(M, year2026("balanced"));
     const kpiValue = (label) => [...d.querySelectorAll(".kpi")].find((k) => k.querySelector(".kpi-label").textContent === label).querySelector(".kpi-value").firstChild.textContent;
     assert.equal(kpiValue("OTIF"), `${(plan.summary.otifRate * 100).toFixed(1).replace(".", ",")}`);
-    assert.equal(d.querySelectorAll(".order-table tbody tr").length, O.orders.length);
-    assert.equal(d.querySelectorAll(".order-table .order-shipped").length, 4);
+    assert.equal(d.querySelectorAll(".order-table-main tbody tr").length, O.orders.length);
+    assert.equal(d.querySelectorAll(".order-table-main .order-shipped").length, 4);
     assert.ok([...d.querySelectorAll(".daily-production-panel tbody tr")].some((tr) => /Выполнено/.test(tr.textContent)));
     assert.equal([...d.querySelectorAll(".shipment-plan-panel tbody tr")].filter((tr) => /Отгружено/.test(tr.textContent)).length, 4);
-    const rows = () => [...d.querySelectorAll(".order-table tbody tr td:nth-child(2) b")].map((b) => b.textContent);
+    const rows = () => [...d.querySelectorAll(".order-table-main tbody tr td:nth-child(2) b")].map((b) => b.textContent);
     d.querySelector('[data-order-quick="otif"]').click();
     assert.equal(rows().length, plan.summary.otif);
-    assert.ok([...d.querySelectorAll(".order-table .otif-badge")].every((b) => b.textContent === "OTIF"));
+    assert.ok([...d.querySelectorAll(".order-table-main .otif-badge")].every((b) => b.textContent === "OTIF"));
     d.querySelector('[data-order-source="prod"]').click();
     const otifProd = plan.results.filter((x) => x.otif && x.productionDate).map((x) => x.orderId);
     assert.deepEqual(rows(), otifProd);
@@ -194,12 +243,20 @@ test("UI: orders — OTIF card, quick filters, order-number filter scoped to the
     assert.equal(d.querySelectorAll(".order-chip").length, 2);
     assert.equal(d.querySelector(".kpis").textContent, kpisBefore, "фильтр по номерам не меняет карточки");
     assert.equal(d.querySelectorAll(".shipment-plan-panel tbody tr").length, 2);
-    assert.ok([...d.querySelectorAll(".quota-row")].every((row) => /ЗК-26101[14]/.test(row.title)));
+    const selectedQuota = [...d.querySelectorAll(".quota-entry")].find((entry) => {
+      const [view, month, ...keyParts] = entry.dataset.quotaEntry.split("|");
+      const quotas = view === "segment" ? plan.segmentQuotaUsage : plan.quotaUsage;
+      return quotas.find((q) => q.month === month && q.key === keyParts.join("|"))?.orders.some((order) => ["ЗК-261011", "ЗК-261014"].includes(order.id));
+    });
+    assert.ok(selectedQuota);
+    if (!selectedQuota.open) selectedQuota.querySelector("summary").click();
+    const expandedIds = [...selectedQuota.querySelectorAll(".order-table-details tbody tr td:nth-child(2) b")].map((b) => b.textContent);
+    assert.ok(expandedIds.length > 0 && expandedIds.every((id) => ["ЗК-261011", "ЗК-261014"].includes(id)), "раскрытие учитывает фильтр заказов раздела");
     assert.ok(d.querySelector(".quota-selected"));
     d.querySelector('[data-tab="demand"]').click();
     assert.equal(d.querySelectorAll(".client-bubble").length, 24, "другие разделы фильтр не затрагивает");
     d.querySelector('[data-tab="orders"]').click();
-    assert.equal(d.querySelectorAll(".order-table tbody tr").length, 2, "фильтр сохраняется в разделе");
+    assert.equal(d.querySelectorAll(".order-table-main tbody tr").length, 2, "фильтр сохраняется в разделе");
     d.querySelector('[data-order-chip="ЗК-261011"]').click();
     assert.deepEqual(rows(), ["ЗК-261014"]);
     d.querySelector("[data-order-filter-clear]").click();

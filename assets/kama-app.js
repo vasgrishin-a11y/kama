@@ -97,6 +97,7 @@
     orderQuick = "all",
     orderSource = "all",
     quotaView = "product",
+    quotaExpanded = new Set(),
     panelCounter = 0,
     expandedPanel = null,
     expandedPanelTab = null,
@@ -1134,21 +1135,48 @@
     return orderPlan;
   }
 
+  /* Keep the drill-down order list identical to the customer-order portfolio table. */
+  function orderTable(rows, { selectAll = false, allOpenSelected = false, emptyMessage = "Нет заказов для выбранных фильтров" } = {}) {
+    const orderRows = rows.map((x) => {
+      const stock = x.stockStatus === "yes" ? ["Да", "ok"] : x.stockStatus === "partial" ? ["Частично", "partial"] : ["Нет", "no"];
+      const select = x.shipped
+        ? '<span class="row-lock" title="Отгружено: факт, пересчёт не выполняется">●</span>'
+        : `<input type="checkbox" data-order-select="${esc(x.orderId)}" aria-label="Выбрать ${esc(x.orderId)}" ${orderSelected.has(x.orderId) ? "checked" : ""}>`;
+      const qty = x.shortQty > 0 ? `${fmt(x.qty)}<small>отгружено ${fmt(x.deliveredQty)}</small>` : fmt(x.qty);
+      const deviation = `${x.lateDays ? `<span class="delta-neg">+${x.lateDays} дн.</span>` : '<span class="delta-pos">В срок</span>'}${x.shortQty > 0 ? `<small class="delta-neg">Недогруз ${fmt(x.shortQty)} т</small>` : ""}`;
+      const stockNote = x.shipped ? (x.productionDate ? "под заказ" : "отгружено со склада") : `${fmt(Math.max(0, x.availableQty))} т на дату проверки`;
+      const statusClass = x.shipped ? (x.otif ? "shipped" : "shipped-bad") : x.exception || x.lateDays ? "warn" : "";
+      return `<tr class="${x.shipped ? "order-shipped" : ""} ${x.exception ? "order-exception" : ""}"${x.note ? ` title="${esc(x.note)}"` : x.exception ? ` title="${esc(x.exception)}"` : ""}><td>${select}</td><td><b>${esc(x.orderId)}</b><small>${esc(x.customer)} · P${x.priority}</small></td><td>${esc(x.productName)}</td><td>${qty}</td><td>${orderDate(x.requestedDate)}</td><td><span class="stock-flag ${stock[1]}">${stock[0]}</span><small>${stockNote}</small></td><td>${esc(x.sourceKind || "—")}</td><td>${esc(nodeLabel(x.sourceNode))}</td><td>${x.productionDate ? `${orderDate(x.productionDate)}<small>${esc(x.machine)} · ${esc(x.campaign)}</small>` : "—"}</td><td>${orderDate(x.shipDate)}</td><td>${orderDate(x.deliveryDate)}</td><td>${deviation}</td><td><span class="otif-badge ${x.otif ? "ok" : "no"}">${x.otif ? "OTIF" : "Not OTIF"}</span></td><td><span class="pill ${statusClass}">${esc(x.status)}</span>${x.overQuota > 0 ? `<small class="quota-flag">Сверх квоты ${fmt(x.overQuota)} т</small>` : ""}</td></tr>`;
+    }).join("");
+    const selectHeader = selectAll
+      ? `<input type="checkbox" data-order-select-all aria-label="Выбрать все открытые заказы" ${allOpenSelected ? "checked" : ""}>`
+      : "Выбор";
+    return `<div class="table-wrap order-table-wrap"><table class="order-table ${selectAll ? "order-table-main" : "order-table-details"}"><thead><tr><th scope="col">${selectHeader}</th><th scope="col">Заказ / клиент</th><th scope="col">Продукт</th><th scope="col">Кол-во, т</th><th scope="col">Требуемая дата</th><th scope="col">Запас доступен</th><th scope="col">Схема обеспечения</th><th scope="col" title="Локация последней мили — склад или РЦ, откуда заказ отправляется клиенту">Место отгрузки клиенту</th><th scope="col">Производство</th><th scope="col">Отгрузка</th><th scope="col">Поставка</th><th scope="col">Отклонение</th><th scope="col">OTIF</th><th scope="col">Статус</th></tr></thead><tbody>${orderRows || `<tr><td colspan="14">${esc(emptyMessage)}</td></tr>`}</tbody></table></div>`;
+  }
+
   /* Bullet chart: portfolio against the S&OP quota per product (or segment) and month. */
   function quotaChart(plan) {
     const rows = quotaView === "segment" ? plan.segmentQuotaUsage : plan.quotaUsage;
     const visible = orderFilter.size ? rows.filter((q) => q.orders.some((o) => orderFilter.has(o.id))) : rows;
     const monthNames = { "2026-10": "Октябрь 2026", "2026-11": "Ноябрь 2026", "2026-12": "Декабрь 2026" };
+    const resultById = new Map(plan.results.map((result) => [result.orderId, result]));
     const max = Math.max(1, ...visible.map((q) => Math.max(q.quota, q.ordered))) * 1.06;
     const x = (value) => `${Math.max(0, Math.min(100, (value / max) * 100))}%`;
     const body = Object.keys(monthNames).map((monthKey) => {
       const items = visible.filter((q) => q.month === monthKey);
       if (!items.length) return "";
-      return `<div class="quota-month"><h3>${monthNames[monthKey]}</h3>${items.map((q) => {
+      return `<div class="quota-month"><h3>${monthNames[monthKey]}</h3>${items.map((q, index) => {
         const over = q.ordered > q.quota + 1e-6, near = !over && q.usage >= 0.85;
         const selected = orderFilter.size ? S(q.orders.filter((o) => orderFilter.has(o.id)), "qty") : 0;
-        const title = `${q.label} · ${monthNames[q.month]}: портфель ${fmt(q.ordered)} т, квота S&OP ${fmt(q.quota)} т (${fmt(q.usage * 100, 1)}%)${selected ? `; выбранные заказы ${fmt(selected)} т` : ""}. Заказы: ${q.orders.map((o) => o.id).join(", ")}`;
-        return `<div class="quota-row ${over ? "over" : near ? "near" : ""}" title="${esc(title)}"><div class="quota-label"><b>${esc(q.label)}</b>${over ? `<span class="quota-alert">Сверх квоты +${fmt(q.ordered - q.quota)} т</span>` : near ? '<span class="quota-warn">Почти заполнена</span>' : ""}</div><div class="quota-track"><i class="quota-fill" style="width:${x(Math.min(q.ordered, q.quota))}"></i>${over ? `<i class="quota-over" style="left:${x(q.quota)};width:${x(q.ordered - q.quota)}"></i>` : ""}${selected ? `<i class="quota-selected" style="width:${x(selected)}"></i>` : ""}<b class="quota-marker" style="left:${x(q.quota)}"></b></div><div class="quota-value"><strong class="${over ? "delta-neg" : ""}">${fmt(q.usage * 100, 0)}%</strong><small>${fmt(q.ordered)} / ${fmt(q.quota)} т</small></div></div>`;
+        const rowKey = `${quotaView}|${monthKey}|${q.key}`;
+        const detailsId = `quota-orders-${quotaView}-${monthKey.replace("-", "")}-${index}`;
+        const expanded = quotaExpanded.has(rowKey);
+        const quotaOrders = q.orders
+          .map((order) => resultById.get(order.id))
+          .filter((result) => result && (!orderFilter.size || orderFilter.has(result.orderId)));
+        const title = `${q.label} · ${monthNames[q.month]}: портфель ${fmt(q.ordered)} т, квота S&OP ${fmt(q.quota)} т (${fmt(q.usage * 100, 1)}%)${selected ? `; выбранные заказы ${fmt(selected)} т` : ""}. Список заказов раскрывается нажатием.`;
+        const details = `<div class="quota-orders" id="${detailsId}" role="region" aria-label="Заказы по квоте ${esc(q.label)} · ${monthNames[q.month]}"><div class="quota-orders-heading"><div><b>Заказы по квоте</b><small>${esc(q.label)} · ${monthNames[q.month]}</small></div><span>Заказов: ${quotaOrders.length} · ${fmt(S(quotaOrders, "quotaQty"))} т</span></div>${orderTable(quotaOrders)}</div>`;
+        return `<details class="quota-entry" data-quota-entry="${esc(rowKey)}" ${expanded ? "open" : ""}><summary class="quota-row ${over ? "over" : near ? "near" : ""}" title="${esc(title)}" aria-controls="${detailsId}"><span class="quota-label"><span class="quota-name"><b>${esc(q.label)}</b><span class="quota-chevron" aria-hidden="true">⌄</span></span>${over ? `<span class="quota-alert">Сверх квоты +${fmt(q.ordered - q.quota)} т</span>` : near ? '<span class="quota-warn">Почти заполнена</span>' : ""}</span><span class="quota-track"><i class="quota-fill" style="width:${x(Math.min(q.ordered, q.quota))}"></i>${over ? `<i class="quota-over" style="left:${x(q.quota)};width:${x(q.ordered - q.quota)}"></i>` : ""}${selected ? `<i class="quota-selected" style="width:${x(selected)}"></i>` : ""}<b class="quota-marker" style="left:${x(q.quota)}"></b></span><span class="quota-value"><strong class="${over ? "delta-neg" : ""}">${fmt(q.usage * 100, 0)}%</strong><small>${fmt(q.ordered)} / ${fmt(q.quota)} т</small></span></summary>${details}</details>`;
       }).join("")}</div>`;
     }).join("");
     const overCount = visible.filter((q) => q.ordered > q.quota + 1e-6).length;
@@ -1157,7 +1185,6 @@
 
   function ordersView() {
     const plan = currentOrderPlan();
-    const nodeName = nodeLabel;
     const all = plan.results;
     const s = plan.summary;
     const inFilter = (result) => !orderFilter.size || orderFilter.has(result.orderId);
@@ -1168,26 +1195,15 @@
     const overQuotaOrders = all.filter((x) => x.overQuota > 0).length;
     const decisions = all.filter((x) => x.exception || x.overQuota > 0).length;
     const notOtif = s.orders - s.otif;
-    const orderRows = shown.map((x) => {
-      const stock = x.stockStatus === "yes" ? ["Да", "ok"] : x.stockStatus === "partial" ? ["Частично", "partial"] : ["Нет", "no"];
-      const select = x.shipped
-        ? '<span class="row-lock" title="Отгружено: факт, пересчёт не выполняется">●</span>'
-        : `<input type="checkbox" data-order-select="${x.orderId}" aria-label="Выбрать ${x.orderId}" ${orderSelected.has(x.orderId) ? "checked" : ""}>`;
-      const qty = x.shortQty > 0 ? `${fmt(x.qty)}<small>отгружено ${fmt(x.deliveredQty)}</small>` : fmt(x.qty);
-      const deviation = `${x.lateDays ? `<span class="delta-neg">+${x.lateDays} дн.</span>` : '<span class="delta-pos">В срок</span>'}${x.shortQty > 0 ? `<small class="delta-neg">Недогруз ${fmt(x.shortQty)} т</small>` : ""}`;
-      const stockNote = x.shipped ? (x.productionDate ? "под заказ" : "отгружено со склада") : `${fmt(Math.max(0, x.availableQty))} т на дату проверки`;
-      const statusClass = x.shipped ? (x.otif ? "shipped" : "shipped-bad") : x.exception || x.lateDays ? "warn" : "";
-      return `<tr class="${x.shipped ? "order-shipped" : ""} ${x.exception ? "order-exception" : ""}"${x.note ? ` title="${esc(x.note)}"` : x.exception ? ` title="${esc(x.exception)}"` : ""}><td>${select}</td><td><b>${x.orderId}</b><small>${esc(x.customer)} · P${x.priority}</small></td><td>${esc(x.productName)}</td><td>${qty}</td><td>${orderDate(x.requestedDate)}</td><td><span class="stock-flag ${stock[1]}">${stock[0]}</span><small>${stockNote}</small></td><td>${esc(nodeName(x.sourceNode))}<small>${esc(x.sourceKind)}</small></td><td>${x.productionDate ? `${orderDate(x.productionDate)}<small>${esc(x.machine)} · ${esc(x.campaign)}</small>` : "—"}</td><td>${orderDate(x.shipDate)}</td><td>${orderDate(x.deliveryDate)}</td><td>${deviation}</td><td><span class="otif-badge ${x.otif ? "ok" : "no"}">${x.otif ? "OTIF" : "Not OTIF"}</span></td><td><span class="pill ${statusClass}">${esc(x.status)}</span>${x.overQuota > 0 ? `<small class="quota-flag">Сверх квоты ${fmt(x.overQuota)} т</small>` : ""}</td></tr>`;
-    }).join("");
     const count = (list) => `<b>${list.length}</b>`;
     const quick = `<div class="order-quick"><div class="flow-switch" role="group" aria-label="Быстрый фильтр OTIF"><button type="button" data-order-quick="all" aria-pressed="${orderQuick === "all"}">Все заказы ${count(filtered)}</button><button type="button" class="quick-ok" data-order-quick="otif" aria-pressed="${orderQuick === "otif"}">OTIF 100% ${count(filtered.filter((x) => x.otif))}</button><button type="button" class="quick-bad" data-order-quick="not" aria-pressed="${orderQuick === "not"}">Not OTIF ${count(filtered.filter((x) => !x.otif))}</button></div>${orderQuick === "all" ? "" : `<div class="flow-switch order-sub" role="group" aria-label="Источник покрытия"><button type="button" data-order-source="all" aria-pressed="${orderSource === "all"}">Все ${count(mainRows)}</button><button type="button" data-order-source="prod" aria-pressed="${orderSource === "prod"}">С производством ${count(mainRows.filter((x) => x.productionDate))}</button><button type="button" data-order-source="stock" aria-pressed="${orderSource === "stock"}">Из запаса ${count(mainRows.filter((x) => !x.productionDate))}</button></div>`}</div>`;
     const allOpenSelected = openShown.length > 0 && openShown.every((x) => orderSelected.has(x.orderId));
-    const portfolio = `${quick}<div class="table-wrap order-table-wrap"><table class="order-table"><thead><tr><th scope="col"><input type="checkbox" data-order-select-all aria-label="Выбрать все открытые заказы" ${allOpenSelected ? "checked" : ""}></th><th scope="col">Заказ / клиент</th><th scope="col">Продукт</th><th scope="col">Кол-во, т</th><th scope="col">Требуемая дата</th><th scope="col">Запас доступен</th><th scope="col">Источник</th><th scope="col">Производство</th><th scope="col">Отгрузка</th><th scope="col">Поставка</th><th scope="col">Отклонение</th><th scope="col">OTIF</th><th scope="col">Статус</th></tr></thead><tbody>${orderRows || '<tr><td colspan="13">Нет заказов для выбранных фильтров</td></tr>'}</tbody></table></div>`;
+    const portfolio = `${quick}${orderTable(shown, { selectAll: true, allOpenSelected })}`;
     const productionRows = O.productionSchedule(all).filter((row) => !orderFilter.size || row.orders.some((id) => orderFilter.has(id)));
     const shipmentRows = [...filtered].sort((a, b) => a.shipDate.localeCompare(b.shipDate) || a.orderId.localeCompare(b.orderId)).map((x) => [
       orderDate(x.shipDate), orderDate(x.deliveryDate), x.orderId, esc(x.customer), esc(x.productName),
       x.shortQty > 0 ? `${fmt(x.deliveredQty)} из ${fmt(x.qty)}` : fmt(x.qty),
-      esc(nodeName(x.sourceNode)),
+      esc(nodeLabel(x.sourceNode)),
       x.productionDate ? `${orderDate(x.productionDate)} · ${esc(x.machine)}` : "Из запаса",
       `${x.lateDays ? `<span class="delta-neg">+${x.lateDays} дн.</span>` : '<span class="delta-pos">В срок</span>'}${x.shortQty > 0 ? ' <span class="delta-neg">· недогруз</span>' : ""}`,
       x.shipped ? `<span class="pill ${x.otif ? "shipped" : "shipped-bad"}">Отгружено</span>` : '<span class="pill">План</span>',
@@ -1195,8 +1211,8 @@
     const picker = `<div class="order-filter"><details class="order-picker"><summary><span>Номера заказов</span><b>${orderFilter.size ? `выбрано ${orderFilter.size}` : "все"}</b></summary><div class="order-picker-panel"><input type="search" data-order-search placeholder="Номер, клиент или продукт" aria-label="Поиск заказа"><div class="order-picker-list">${all.map((x) => `<label data-order-option="${esc(`${x.orderId} ${x.customer} ${x.productName}`.toLowerCase())}"><input type="checkbox" value="${x.orderId}" ${orderFilter.has(x.orderId) ? "checked" : ""}><b>${x.orderId}</b><span>${esc(x.customer)} · ${esc(x.productName)}${x.shipped ? " · отгружен" : ""}</span></label>`).join("")}</div><div class="order-picker-actions"><button type="button" class="button" data-order-filter-clear>Сбросить</button><button type="button" class="button primary" data-order-filter-apply>Применить</button></div></div></details><div class="order-chips">${[...orderFilter].map((id) => `<button type="button" class="order-chip" data-order-chip="${id}" aria-label="Убрать ${id} из фильтра">${id}<span aria-hidden="true">×</span></button>`).join("")}</div></div>`;
     return `<div class="order-heading">${picker}<div class="order-actions"><button type="button" class="button primary" data-order-recalc="all">↻ Пересчитать весь портфель</button><button type="button" class="button" data-order-recalc="selected">Пересчитать выбранные <span class="selection-count">${orderSelected.size}</span></button></div></div>
       <div class="kpis kpis-6">${kpi("Заказов в портфеле", s.orders, "", `${s.shipped} отгружено · ${s.open} в работе · ${fmt(s.shipmentQty)} т`, true)}${kpi("OTIF", fmt(s.otifRate * 100, 1), "%", `${s.otif} из ${s.orders} · факт ${s.factOtif}/${s.shipped} · план ${s.planOtif}/${s.open}`, s.otifRate >= 0.95 ? "accent" : "alert")}${kpi("Из запаса", s.fromStock, "заказов", `${fmt(S(all.filter((x) => !x.productionDate), "qty"))} т`)}${kpi("С производством", s.withProduction, "заказов", `${fmt(s.productionQty)} т к выпуску`)}${kpi("Not OTIF", notOtif, "заказов", `опоздание ${s.late} · недогруз ${s.notInFull}`, notOtif ? "alert" : "")}${kpi("Требуют решения S&OP", decisions, "заказов", `сверх квоты ${overQuotaOrders} · вне кампаний ${s.exceptions}`, decisions ? "alert" : "")}</div>
-      ${panel("Портфель клиентских заказов и доступность", "", portfolio, "orders-portfolio-panel")}
       ${panel("Заполнение квоты S&OP", "", quotaChart(plan), "quota-panel")}
+      ${panel("Портфель клиентских заказов и доступность", "", portfolio, "orders-portfolio-panel")}
       ${panel("1 · План производства по суткам и агрегатам", "", table(["Дата", "Агрегат", "Кампания S&OP", "Продукт", "Заказы", "К выпуску, т", "Объём кампании, т", "Доля заказа", "Статус"], productionRows.map((row) => [orderDate(row.date), row.machine, esc(row.campaign), esc(row.productName), row.orders.join(", "), fmt(row.qty), row.campaignGood ? fmt(row.campaignGood) : "—", row.campaignGood ? pct(row.qty / row.campaignGood) : "—", row.fact ? '<span class="pill shipped">Выполнено</span>' : row.exceptions ? '<span class="pill red">Вне SOP</span>' : row.qty > row.campaignGood ? '<span class="pill warn">Нужен пересмотр</span>' : '<span class="pill">В кампании</span>'])), "daily-production-panel")}
       ${panel("2 · План отгрузок", "", table(["Отгрузка", "Поставка", "Заказ", "Клиент", "Продукт", "Кол-во, т", "Склад отгрузки", "Производство / запас", "Срок", "Статус"], shipmentRows), "shipment-plan-panel")}`;
   }
@@ -3281,6 +3297,9 @@
   }
 
   function render() {
+    const currentQuotaEntries = [...document.querySelectorAll(".quota-entry")];
+    if (currentQuotaEntries.length)
+      quotaExpanded = new Set(currentQuotaEntries.filter((entry) => entry.open).map((entry) => entry.dataset.quotaEntry));
     /* Запоминаем развёрнутую панель и положение прокрутки до перерисовки,
        чтобы действия на диаграмме (drag-and-drop, фильтры переделов) не
        выбрасывали пользователя из режима «Развернуто». */
@@ -3397,7 +3416,7 @@
     }));
     const selectAll = document.querySelector("[data-order-select-all]");
     if (selectAll) selectAll.onchange = () => {
-      const visible = [...document.querySelectorAll("[data-order-select]")].map((input) => input.dataset.orderSelect);
+      const visible = [...document.querySelectorAll(".order-table-main [data-order-select]")].map((input) => input.dataset.orderSelect);
       visible.forEach((id) => (selectAll.checked ? orderSelected.add(id) : orderSelected.delete(id)));
       render();
     };
@@ -4200,7 +4219,8 @@
         Поставлено_т: x.deliveredQty,
         Требуемая_дата: x.requestedDate,
         Запас_доступен: x.stockStatus,
-        Склад: x.sourceNode,
+        Схема_обеспечения: x.sourceKind,
+        Место_отгрузки_клиенту: nodeLabel(x.sourceNode),
         Дата_производства: x.productionDate,
         Дата_отгрузки: x.shipDate,
         Дата_поставки: x.deliveryDate,
@@ -4219,7 +4239,7 @@
         Клиент: x.customer,
         Продукт: x.productName,
         Количество_т: x.deliveredQty,
-        Склад: x.sourceNode,
+        Место_отгрузки_клиенту: nodeLabel(x.sourceNode),
         Статус: x.shipped ? "Отгружено" : "План",
       })));
       add(

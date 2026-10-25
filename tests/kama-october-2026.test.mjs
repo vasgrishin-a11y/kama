@@ -107,10 +107,10 @@ test("October workspace renders and wires every requested dashboard workflow", (
     assert.match(d.querySelector("#content").textContent, /Цель маржи/);
 
     d.querySelector('[data-tab="orders"]').click();
-    assert.equal(d.querySelectorAll("[data-order-select]").length, O.openOrders.length);
+    assert.equal(d.querySelectorAll(".order-table-main [data-order-select]").length, O.openOrders.length);
     assert.ok(d.querySelectorAll(".daily-production-panel tbody tr").length > 0);
     assert.equal(d.querySelectorAll(".shipment-plan-panel tbody tr").length, O.orders.length);
-    d.querySelector('[data-order-select="ЗК-261001"]').click();
+    d.querySelector('.order-table-main [data-order-select="ЗК-261001"]').click();
     d.querySelector('[data-order-recalc="selected"]').click();
     assert.match(d.querySelector("#toast").textContent, /Пересчитано заказов: 1/);
     assert.equal(d.querySelector(".order-notice"), null);

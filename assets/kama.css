@@ -2476,7 +2476,8 @@ body.has-expanded-panel::before {
 .order-table td:nth-child(2), .order-table th:nth-child(2),
 .order-table td:nth-child(3), .order-table th:nth-child(3),
 .order-table td:nth-child(7), .order-table th:nth-child(7),
-.order-table td:nth-child(8), .order-table th:nth-child(8) { text-align: left; }
+.order-table td:nth-child(8), .order-table th:nth-child(8),
+.order-table td:nth-child(9), .order-table th:nth-child(9) { text-align: left; }
 .order-table td small { display: block; max-width: 190px; margin-top: 3px; color: var(--muted); font-size: 8px; line-height: 1.45; white-space: normal; }
 .order-table input[type="checkbox"] { width: 16px; height: 16px; accent-color: #4769ff; }
 .order-exception { background: #fff7f7; }
@@ -2665,7 +2666,7 @@ body.has-expanded-panel::before {
 .order-shipped td:nth-child(2) b::after { content: " · факт"; color: #6b7a93; font-weight: 600; font-size: 9px; }
 .row-lock { color: #9aa6b5; font-size: 10px; padding-left: 4px; }
 .quota-flag { display: block; margin-top: 4px; color: #b63e52 !important; font-weight: 700; }
-.order-table td:nth-child(12), .order-table th:nth-child(12) { text-align: center; }
+.order-table td:nth-child(13), .order-table th:nth-child(13) { text-align: center; }
 
 .quota-legend { display: flex; flex-wrap: wrap; gap: 16px; color: var(--muted); font-size: 10px; margin: 2px 0 10px; }
 .quota-legend span { display: inline-flex; align-items: center; gap: 6px; }
@@ -2675,18 +2676,38 @@ body.has-expanded-panel::before {
 .quota-legend i.selected { background: #1d36a8; }
 .quota-chart { display: grid; gap: 14px; }
 .quota-month h3 { margin: 4px 0 6px; color: #3452d1; font-size: 11px; text-transform: uppercase; letter-spacing: .6px; }
+.quota-entry { display: block; margin: 0; }
+.quota-entry > summary::-webkit-details-marker { display: none; }
+.quota-entry > summary::marker { content: ""; }
 .quota-row {
+  appearance: none;
+  -webkit-appearance: none;
   display: grid;
+  width: 100%;
   grid-template-columns: minmax(170px, 250px) minmax(0, 1fr) 118px;
   align-items: center;
   gap: 14px;
   padding: 7px 8px;
+  border: 0;
   border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  list-style: none;
 }
 .quota-row:hover { background: #f6f8fd; }
+.quota-row:focus-visible { outline: 2px solid #4769ff; outline-offset: 2px; }
 .quota-row.over { background: #fff4f5; }
+.quota-row.over:hover { background: #fff0f1; }
+.quota-entry[open] > .quota-row { background: #f4f6fc; }
 .quota-label { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.quota-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.quota-name b { flex: 1 1 auto; min-width: 0; }
 .quota-label b { font-size: 11px; color: #213754; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quota-chevron { flex: 0 0 auto; color: #78859a; font-size: 14px; line-height: 1; transition: transform .16s ease; }
+.quota-entry[open] .quota-chevron { transform: rotate(180deg); color: #3452d1; }
 .quota-alert { align-self: flex-start; padding: 2px 7px; border-radius: 4px; background: #c21639; color: #fff; font-size: 9px; font-weight: 800; }
 .quota-warn { align-self: flex-start; padding: 2px 7px; border-radius: 4px; background: #fff0d9; color: #99611a; font-size: 9px; font-weight: 700; }
 .quota-track { position: relative; height: 18px; border-radius: 6px; background: #eef1f6; overflow: visible; }
@@ -2699,6 +2720,12 @@ body.has-expanded-panel::before {
 .quota-value { text-align: right; }
 .quota-value strong { display: block; font-size: 15px; font-variant-numeric: tabular-nums; }
 .quota-value small { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.quota-orders { margin: 0 8px 12px; padding: 12px; border: 1px solid #e2e8f1; border-radius: 10px; background: #fbfcff; }
+.quota-orders-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 2px 8px; color: #31445f; font-size: 11px; }
+.quota-orders-heading b { display: block; }
+.quota-orders-heading small { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; font-weight: 500; }
+.quota-orders-heading > span { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.quota-orders .order-table-wrap { margin: 0; }
 
 /* Inventory: turnover heatmap and obsolete stock */
 .turn-legend i.ok { background: #e3f3ed; }
@@ -2800,11 +2827,11 @@ body.has-expanded-panel::before {
   .segment-otif { grid-template-columns: auto auto minmax(90px, 1fr); }
 }
 
-/* Compact order table: the OTIF and status columns fit at 1440 px */
-.order-table { min-width: 1240px; }
+/* Keep the expanded 14-column order table legible; scroll horizontally on narrow screens. */
+.order-table { min-width: 1480px; }
 .order-table th, .order-table td { padding-left: 8px; padding-right: 8px; }
-.order-table td:nth-child(3), .order-table td:nth-child(7), .order-table td:nth-child(8) { white-space: normal; min-width: 110px; max-width: 170px; line-height: 1.35; }
-.order-table td:nth-child(13) { min-width: 120px; }
+.order-table td:nth-child(3), .order-table td:nth-child(7), .order-table td:nth-child(8), .order-table td:nth-child(9) { white-space: normal; min-width: 110px; max-width: 170px; line-height: 1.35; }
+.order-table td:nth-child(14) { min-width: 120px; }
 .row-lock { color: #7b8aa3; }
 /* Trim segment keeps its colour on any position (was overridden by :nth-child(even)). */
 .cut-pattern span.waste,
