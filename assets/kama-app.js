@@ -271,6 +271,9 @@
       name: c.machine,
       stage: "КДМ / БДМ",
     }));
+    /* Режущий комплект — непосредственный upstream упаковки. Заполняется
+       раньше УП-1 благодаря порядку auxiliaryUnits. */
+    const cuttingByCampaign = new Map();
     const days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     for (const unit of auxiliaryUnits) {
       for (let m = 0; m < 12; m++) {
@@ -313,10 +316,16 @@
             cursor += setup + run;
             return { group, members, first, setup, run, begin };
           });
-          /* Если плотная очередь иначе начиналась бы позже потребителя,
-             целиком выносим её чуть раньше границы месяца. Так сохраняются и
-             последовательность агрегата, и обеспеченность следующего передела. */
-          const earlyShift = Math.min(0, ...schedule.map((item) => item.first.start - item.begin));
+          /* Вся очередь массы сдвигается так, чтобы каждая кампания ЗАВЕРШИЛАСЬ
+             до старта первой потребляющей её кампании машины. Сравнивать только
+             старты недостаточно: при параллельном старте масса ещё готовится,
+             а машина уже начинает её расходовать. Первый член группы — самый
+             ранний потребитель, поэтому остальные члены также обеспечены. */
+          const earlyShift = Math.min(
+            0,
+            ...schedule.map((item) =>
+              item.first.start - (item.begin + item.setup + item.run)),
+          );
           for (let index = 0; index < schedule.length; index++) {
             const { group, members, first, setup, run } = schedule[index];
             const seq = index + 1;
@@ -352,13 +361,15 @@
             });
           }
         } else {
-          /* Отделка не может начаться раньше обеспечивающей кампании машины;
-             очередь агрегата идёт в хронологии производства. */
+          /* Finish-to-start для каждого передела: резка ждёт ОКОНЧАНИЯ
+             кампании КДМ/БДМ, а упаковка — окончания своей кампании резки.
+             Очередь на самом агрегате также остаётся строго последовательной. */
           const ordered = [...source].sort((a, b) => a.start - b.start);
           ordered.forEach((c, index) => {
             const setup = index ? Math.min(1.2, c.setup * 0.25) : 0.5;
             const run = c[unit.source] / unit.rate;
-            const begin = Math.max(elapsed, c.start);
+            const upstream = unit.id === "УП-1" ? cuttingByCampaign.get(c.id) : c;
+            const begin = Math.max(elapsed, upstream?.end ?? c.end);
             elapsed = begin + setup + run;
             setupTotal += setup;
             runTotal += run;
@@ -374,7 +385,10 @@
               run,
               recipe: M.recipes ? M.recipes[c.product] : undefined,
               supplies: c.machine,
+              dependsOn: upstream?.id || c.id,
             });
+            if (unit.id === "ПРС-1" || unit.id === "ПРС-2")
+              cuttingByCampaign.set(c.id, campaigns[campaigns.length - 1]);
           });
         }
         capacities.push({
@@ -391,6 +405,66 @@
           used: setupTotal + runTotal,
           load: (setupTotal + runTotal) / available,
         });
+      }
+    }
+
+    /* Сверяем очереди на единой часовой оси года. Месячные планы могут
+       выходить за границу своего месяца (масса готовится заранее, отделка
+       завершает выпуск следующего месяца); без этого шага кампания следующего
+       месяца могла начаться поверх хвоста предыдущей. */
+    const monthOffsets = [];
+    let monthOffset = 0;
+    for (const daysInMonth of days) {
+      monthOffsets.push(monthOffset);
+      monthOffset += daysInMonth * 24;
+    }
+    const absoluteStart = (c) => monthOffsets[c.month] + c.start;
+    const absoluteEnd = (c) => monthOffsets[c.month] + c.end;
+    const operationById = new Map(campaigns.map((c) => [c.id, c]));
+    const writeAbsoluteInterval = (c, begin, end) => {
+      c.start = begin - monthOffsets[c.month];
+      c.end = end - monthOffsets[c.month];
+    };
+    for (const unit of auxiliaryUnits) {
+      const list = campaigns.filter((c) => c.machine === unit.id);
+      if (unit.stage === "Массоподготовка") {
+        /* EDD (earliest due date): дедлайн — старт самого раннего потребителя.
+           Обратный проход ставит каждую кампанию не позже дедлайна и не позже
+           начала следующей кампании на том же агрегате. */
+        const ordered = list
+          .map((c) => ({
+            c,
+            deadline: Math.min(...(c.covers || []).map((id) => {
+              const consumer = operationById.get(id);
+              return consumer ? absoluteStart(consumer) : Infinity;
+            })),
+          }))
+          .sort((a, b) => a.deadline - b.deadline || absoluteStart(a.c) - absoluteStart(b.c));
+        let nextStart = Infinity;
+        for (let i = ordered.length - 1; i >= 0; i--) {
+          const { c, deadline } = ordered[i];
+          const end = Math.min(deadline, nextStart);
+          const begin = end - c.setup - c.run;
+          writeAbsoluteInterval(c, begin, end);
+          nextStart = begin;
+        }
+      } else {
+        /* Прямой finish-to-start проход. Для УП-1 dependsOn уже указывает на
+           ПРС, поэтому упаковка всегда правее и машины, и резки своей цепочки. */
+        const ordered = [...list].sort((a, b) => {
+          const upstreamA = operationById.get(a.dependsOn);
+          const upstreamB = operationById.get(b.dependsOn);
+          return (upstreamA ? absoluteStart(upstreamA) : absoluteStart(a)) -
+            (upstreamB ? absoluteStart(upstreamB) : absoluteStart(b));
+        });
+        let cursor = 0;
+        for (const c of ordered) {
+          const upstream = operationById.get(c.dependsOn);
+          const begin = Math.max(cursor, upstream ? absoluteEnd(upstream) : 0);
+          const end = begin + c.setup + c.run;
+          writeAbsoluteInterval(c, begin, end);
+          cursor = end;
+        }
       }
     }
     return { capacities, campaigns };
@@ -1195,7 +1269,7 @@
     return "custom";
   }
   /* Все связанные кампании выбранной: обход связей обеспеченности в обе
-     стороны (масса ↔ машина ↔ отделка) — это единая технологическая цепочка. */
+     стороны (масса ↔ машина ↔ резка ↔ упаковка) — единая технологическая цепочка. */
   function dispatchNeighborhood(start, links) {
     const up = new Map(),
       down = new Map();
@@ -1263,16 +1337,17 @@
     const byId = new Map(windowCamps.map((c) => [c.id, c]));
     const camps = windowCamps.filter((c) => chosen.has(c.machine));
 
-    /* Связи обеспеченности между переделами: масса → машина → отделка.
-       Строятся по всем видимым агрегатам окна, даже если часть строк скрыта,
-       чтобы каскадный сдвиг и подсветка цепочки не теряли связанные кампании. */
+    /* Связи обеспеченности: масса → машина → резка → упаковка. Строятся
+       по всем видимым агрегатам окна, даже если часть строк скрыта, чтобы
+       каскадный сдвиг и подсветка цепочки не теряли связанные кампании. */
     const links = [];
     for (const c of windowCamps) {
       if (c.stage === "Массоподготовка") {
         for (const mid of c.covers || []) if (byId.has(mid)) links.push({ from: c.id, to: mid, kind: "mass" });
       } else if (c.stage === "Отделка") {
-        const mid = c.id.slice(c.machine.length + 1);
-        if (byId.has(mid)) links.push({ from: mid, to: c.id, kind: "fin" });
+        const upstream = c.dependsOn || c.id.slice(c.machine.length + 1);
+        if (byId.has(upstream))
+          links.push({ from: upstream, to: c.id, kind: c.machine === "УП-1" ? "pack" : "fin" });
       }
     }
     const downstream = new Map();
@@ -1342,13 +1417,14 @@
     const unitRows = [...new Map(operations.capacities.map((x) => [x.machine, x])).values()]
       .filter((u) => chosen.has(u.machine))
       .sort((a, b) => (GANTT_UNIT_ORDER[a.machine] ?? 9) - (GANTT_UNIT_ORDER[b.machine] ?? 9));
-    /* Правило обеспеченности: кампания следующего передела не может
-       стартовать раньше обеспечивающей кампании предыдущего передела. */
+    /* Finish-to-start: следующий передел начинается только после ОКОНЧАНИЯ
+       upstream. Разрыв считаем в фактических часах (dayOf лишь переводит их
+       в сутки), поэтому частичная накладка внутри одних суток также видна. */
     const scoredLinks = links
       .map((l) => ({ ...l, from: byId.get(l.from), to: byId.get(l.to) }))
-      .map((l) => ({ ...l, gap: dayOf(l.to, "start") - dayOf(l.from, "start") }));
+      .map((l) => ({ ...l, gap: dayOf(l.to, "start") - dayOf(l.from, "end") }));
     const visibleLinks = scoredLinks.filter((l) => chosen.has(l.from.machine) && chosen.has(l.to.machine));
-    const violations = visibleLinks.filter((l) => l.gap < 0);
+    const violations = visibleLinks.filter((l) => l.gap < -1e-9);
     const movedCount = windowCamps.filter((c) => dispatchMoves.has(c.id)).length;
     const preset = dispatchPresetOf(chosen);
     const group = dispatchGroupOf(chosen);
@@ -1491,10 +1567,10 @@
       for (const l of visibleLinks) {
         const f = anchor(l.from), t = anchor(l.to);
         if (!f || !t) continue;
-        const bad = l.gap < 0;
+        const bad = l.gap < -1e-9;
         const dim = focusSet && !(focusSet.has(l.from.id) && focusSet.has(l.to.id));
         const bend = Math.max(14, (t.x0 - f.x1) / 2);
-        svg += `<path class="gantt-link${bad ? " bad" : ""}${dim ? " dim" : ""}" marker-end="url(#gantt-arrow${bad ? "-bad" : ""})" d="M${f.x1},${f.y} C${f.x1 + bend},${f.y} ${t.x0 - bend},${t.y} ${t.x0},${t.y}"><title>${esc(l.from.id)} → ${esc(l.to.id)}${bad ? ` · нарушение: старт раньше обеспечивающей кампании на ${-l.gap} сут.` : ""}</title></path>`;
+        svg += `<path class="gantt-link${bad ? " bad" : ""}${dim ? " dim" : ""}" data-gantt-from="${esc(l.from.id)}" data-gantt-to="${esc(l.to.id)}" data-gantt-kind="${l.kind}" marker-end="url(#gantt-arrow${bad ? "-bad" : ""})" d="M${f.x1},${f.y} C${f.x1 + bend},${f.y} ${t.x0 - bend},${t.y} ${t.x0},${t.y}"><title>${esc(l.from.id)} → ${esc(l.to.id)}${bad ? ` · нарушение: старт на ${fmt(-l.gap * 24, 1)} ч раньше окончания upstream` : ""}</title></path>`;
       }
     }
     /* Точная геометрия занятости. setup — отдельный переход перед выпуском,
@@ -1594,12 +1670,13 @@
     const focusLabel = focusSet
       ? `выбрана ${dispatchFocus} · в цепочке ${focusSet.size} ${plural(focusSet.size, "кампания", "кампании", "кампаний")} · остальные полосы серые`
       : `показано ${selectedLabel} · янтарная штриховка — переход · клик по кампании подсвечивает её цепочку · перетаскивайте кампании мышью`;
-    const toolbar = `<div class="chart-toolbar dispatch-toolbar"><div class="dispatch-filter-row"><div class="flow-switch dispatch-group-switch" role="group" aria-label="Набор агрегатов по продукту">${Object.entries(dispatchUnitGroups).map(([id, g]) => `<button type="button" data-dispatch-group="${id}" aria-pressed="${group === id}" title="${groupTitle[id]}">${g.label}</button>`).join("")}</div><div class="flow-switch" role="group" aria-label="Группы переделов на диаграмме Ганта">${Object.entries(dispatchStageFilter).map(([id, s]) => `<button type="button" data-dispatch-stage="${id}" aria-pressed="${preset === id}">${s.label}</button>`).join("")}</div><div class="flow-switch dispatch-unit-switch" role="group" aria-label="Любой набор агрегатов на диаграмме Ганта" title="Включите любое сочетание агрегатов — не только один или все"><span class="dispatch-units-label">АГРЕГАТЫ</span>${GANTT_UNITS.map((u) => `<button type="button" data-dispatch-unit="${u}" aria-pressed="${chosen.has(u)}" title="Показать / скрыть агрегат ${u}">${u}</button>`).join("")}</div></div><div class="flow-switch" role="group" aria-label="Инструменты диспетчерской"><button type="button" data-dispatch-dim-done aria-pressed="${dispatchDimDone}" title="Завершённые кампании показываются серым; отожмите кнопку, чтобы вернуть цвет">⏹ Завершённые серым</button><button type="button" data-dispatch-links aria-pressed="${dispatchLinks}" title="Линии снабжения: масса → машина → отделка">Связи между переделами</button><button type="button" data-dispatch-cascade aria-pressed="${dispatchCascade}" title="Перетаскивание кампании сдвигает связанные кампании следующих переделов тем же сдвигом">Двигать связанные вместе</button>${focusSet ? `<button type="button" data-dispatch-clear-focus>Снять выделение</button>` : ""}<button type="button" class="dispatch-reset" data-dispatch-reset ${movedCount ? "" : "disabled"}>Сбросить сдвиги${movedCount ? ` (${movedCount})` : ""}</button></div><span class="chart-context">${focusLabel}</span></div>`;
+    const toolbar = `<div class="chart-toolbar dispatch-toolbar"><div class="dispatch-filter-row"><div class="flow-switch dispatch-group-switch" role="group" aria-label="Набор агрегатов по продукту">${Object.entries(dispatchUnitGroups).map(([id, g]) => `<button type="button" data-dispatch-group="${id}" aria-pressed="${group === id}" title="${groupTitle[id]}">${g.label}</button>`).join("")}</div><div class="flow-switch" role="group" aria-label="Группы переделов на диаграмме Ганта">${Object.entries(dispatchStageFilter).map(([id, s]) => `<button type="button" data-dispatch-stage="${id}" aria-pressed="${preset === id}">${s.label}</button>`).join("")}</div><div class="flow-switch dispatch-unit-switch" role="group" aria-label="Любой набор агрегатов на диаграмме Ганта" title="Включите любое сочетание агрегатов — не только один или все"><span class="dispatch-units-label">АГРЕГАТЫ</span>${GANTT_UNITS.map((u) => `<button type="button" data-dispatch-unit="${u}" aria-pressed="${chosen.has(u)}" title="Показать / скрыть агрегат ${u}">${u}</button>`).join("")}</div></div><div class="flow-switch" role="group" aria-label="Инструменты диспетчерской"><button type="button" data-dispatch-dim-done aria-pressed="${dispatchDimDone}" title="Завершённые кампании показываются серым; отожмите кнопку, чтобы вернуть цвет">⏹ Завершённые серым</button><button type="button" data-dispatch-links aria-pressed="${dispatchLinks}" title="Линии снабжения: масса → машина → резка → упаковка">Связи между переделами</button><button type="button" data-dispatch-cascade aria-pressed="${dispatchCascade}" title="Перетаскивание кампании сдвигает связанные кампании следующих переделов тем же сдвигом">Двигать связанные вместе</button>${focusSet ? `<button type="button" data-dispatch-clear-focus>Снять выделение</button>` : ""}<button type="button" class="dispatch-reset" data-dispatch-reset ${movedCount ? "" : "disabled"}>Сбросить сдвиги${movedCount ? ` (${movedCount})` : ""}</button></div><span class="chart-context">${focusLabel}</span></div>`;
     const legend = `<div class="flow-legend gantt-legend"><span><i style="background:#8b5cf6"></i>Массоподготовка</span><span><i style="background:#4769ff"></i>КДМ-9</span><span><i style="background:#19a27b"></i>БДМ-7</span><span><i style="background:#ff8c00"></i>Отделка</span><span><i class="gantt-changeover-swatch"></i>переход / переналадка</span><span><i class="gantt-done-swatch"></i>завершённые (серым)</span><span><i class="gantt-focus-swatch"></i>выбранная кампания и её цепочка</span><span><i class="gantt-moved-swatch"></i>сдвинута вручную</span><span><i class="gantt-hl-swatch"></i>кампании выбранных заказов</span><span><i class="gantt-link-swatch"></i>связь обеспеченности</span><span><i class="gantt-bad-swatch"></i>нарушение последовательности</span></div>`;
 
+    const violationKind = { mass: "Масса → машина", fin: "Машина → резка", pack: "Резка → упаковка" };
     const violationsBody = violations.length
-      ? `<p class="panel-note">Красные связи — кампания следующего передела стартует раньше обеспечивающей кампании предыдущего (масса → машина → отделка). Передвиньте полосы так, чтобы связи стали серыми, или сбросьте сдвиги.</p>${table(["Связь", "Обеспечивающая кампания", "Зависимая кампания", "Старт раньше на, сут.", "Как исправить"], violations.map((v) => [v.kind === "mass" ? "Масса → машина" : "Машина → отделка", v.from.id, v.to.id, `<span class="delta-neg">${-v.gap}</span>`, `сдвинуть ${v.to.id} вправо на ${-v.gap} сут. или ${v.from.id} влево`]))}`
-      : '<p class="muted">Нарушений нет: каждая кампания машины стартует не раньше обеспечивающей кампании массы, отделка — не раньше своей кампании машины.</p>';
+      ? `<p class="panel-note">Красные связи — кампания следующего передела стартует до окончания обеспечивающей кампании (масса → машина → резка → упаковка). Передвиньте полосы так, чтобы связи стали серыми, или сбросьте сдвиги.</p>${table(["Связь", "Обеспечивающая кампания", "Зависимая кампания", "Накладка, ч", "Как исправить"], violations.map((v) => [violationKind[v.kind], v.from.id, v.to.id, `<span class="delta-neg">${fmt(-v.gap * 24, 1)}</span>`, `сдвинуть ${v.to.id} вправо минимум на ${Math.ceil(-v.gap)} сут. или ${v.from.id} влево`]))}`
+      : '<p class="muted">Нарушений нет: машина стартует после окончания кампании массы, резка — после кампании машины, упаковка — после резки. Внутри каждого агрегата кампании также идут последовательно.</p>';
 
     const capacityNote = capacityProblems.length
       ? `<p class="panel-note">Проверка учитывает переходы и ручные сдвиги: занятость агрегата считается по точным часовым интервалам на Ганте, фонд — по доступным часам месяца за вычетом плановых ремонтов. Перегрузка — кампаний больше, чем фонд; накладка — две кампании одновременно на одном агрегате.</p>`
@@ -1648,7 +1725,7 @@
     const ordersToolbar = `<div class="chart-toolbar"><div class="flow-switch" role="group" aria-label="Подсветка заказов на диаграмме"><button type="button" data-dispatch-order-all="prod">Выделить все из производства (${dispatchOrderIds.length})</button><button type="button" data-dispatch-order-all="clear">Снять выделение</button></div><span class="chart-context">${dispatchOrders.size ? `выбрано ${dispatchOrders.size} ${plural(dispatchOrders.size, "заказ", "заказа", "заказов")} · подсвечено ${highlight.size} ${plural(highlight.size, "кампания", "кампании", "кампаний")} на Ганте` : "выберите заказ — его кампании подсветятся во всех переделах"}</span></div>`;
 
     return `<div class="kpis kpis-6">${kpi("Кампаний в окне", fmt(camps.length), "", `${periodLabel} · ${selectedLabel}`, true)}${kpi("Заказов из производства", fmt(productionOrders.length), "", `${fmt(S(productionOrders, "qty"))} т · ATP на ${orderDate(O.AS_OF)}`)}${kpi("Переходы в периоде", fmt(setupHours, 1), "ч", `цель ≤ ${fmt(setupTargetHours, 1)} ч · ${setupOverTarget ? `<span class="delta-neg">превышение ${fmt(setupHours - setupTargetHours, 1)} ч</span>` : `<span class="delta-pos">остаток ${fmt(setupTargetHours - setupHours, 1)} ч</span>`} · лучшая версия цикла, коэф. ${fmt(targetSetupCoef, 2)} · план ${fmt(planSetupCoef, 2)}`, setupOverTarget ? "alert" : "accent")}${kpi("Доля переходов в фонде", pct(setupShare), "", `цель ≤ ${pct(setupTargetShare)} · фонд ${fmt(fundHours)} ч · ${setupShare > setupTargetShare ? `<span class="delta-neg">+${fmt((setupShare - setupTargetShare) * 100, 2)} п.п.</span>` : `<span class="delta-pos">${fmt((setupTargetShare - setupShare) * 100, 2)} п.п. в запасе</span>`}`, setupShare > setupTargetShare + 1e-6 ? "alert" : "")}${kpi("Нарушений последовательности", fmt(violations.length), "связей", violations.length ? "есть накладки между переделами" : "обеспеченность соблюдена", violations.length ? "alert" : "")}${kpi("Перегрузки мощностей", fmt(capacityProblems.length), "проблем", `${overloads} перегрузок фонда · ${overlaps} накладок кампаний`, capacityProblems.length ? "alert" : "")}</div>
-      ${panel("Диаграмма Ганта · кампании по агрегатам", `${periodLabel} · ${chosen.size === GANTT_UNITS.length ? "все агрегаты" : GANTT_UNITS.filter((u) => chosen.has(u)).join(", ")} · шкала по суткам, точность до часа · переходы показаны отдельно · связи масса → КДМ/БДМ → отделка`, `${toolbar}<div class="gantt-wrap" style="--gantt-head:${GANTT.head}px;--gantt-row:${GANTT.row}px;--gantt-label:${GANTT.label}px">${labels}<div class="chart-scroll gantt-scroll">${svg}</div></div>${legend}`, "dispatch-gantt-panel")}
+      ${panel("Диаграмма Ганта · кампании по агрегатам", `${periodLabel} · ${chosen.size === GANTT_UNITS.length ? "все агрегаты" : GANTT_UNITS.filter((u) => chosen.has(u)).join(", ")} · шкала по суткам, точность до часа · переходы показаны отдельно · finish-to-start: масса → КДМ/БДМ → резка → упаковка`, `${toolbar}<div class="gantt-wrap" style="--gantt-head:${GANTT.head}px;--gantt-row:${GANTT.row}px;--gantt-label:${GANTT.label}px">${labels}<div class="chart-scroll gantt-scroll">${svg}</div></div>${legend}`, "dispatch-gantt-panel")}
       ${panel("Последовательность между переделами", "Проверка обеспеченности после ручных сдвигов", violationsBody, "dispatch-violations-panel")}
       ${panel("Доступность мощностей", `${periodLabel} · свободный фонд и накладки после ручных сдвигов`, `${capacityNote}${capacityProblemsTable}${capacitySummary}`, "dispatch-capacity-panel")}
       ${panel("Заказы из производства и их кампании", "Только заказы, покрываемые производством (не запасом) · в каких кампаниях агрегатов они запланированы", `${ordersToolbar}${paged("dispatch-orders", ["Выбор", "Заказ / клиент", "Продукт", "Кол-во, т", "Требуемая дата", "Покрытие", "Дата производства", "Кампании массоподготовки", "Кампании КДМ / БДМ", "Кампании отделки"], orderRows)}`, "dispatch-orders-panel")}`;

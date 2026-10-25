@@ -335,6 +335,60 @@ test('dispatch: click highlights the campaign chain and greys the rest; complete
  }finally{w.close();}
 });
 
+test('dispatch: every link is finish-to-start and packaging follows cutting, including manual moves',()=>{
+ const dom=browser(),w=dom.window,d=w.document;try{
+ d.querySelector('[data-tab="dispatch"]').click();
+ const svg=()=>d.querySelector('.gantt-svg');
+ const bars=()=>[...svg().querySelectorAll('.gantt-bar')];
+ const byId=()=>new Map(bars().map(b=>[b.dataset.ganttKey,b]));
+ const links=()=>[...svg().querySelectorAll('.gantt-link')];
+ const start=(bar)=>Number(bar.dataset.occupancyStartHour),end=(bar)=>Number(bar.dataset.endHour);
+ /* Независимо проверяем фактические часы полос, а не только CSS-класс связи:
+    downstream.start >= upstream.end для массы, машины, резки и упаковки. */
+ let checked=0,packChecked=0;
+ const initialById=byId();
+ for(const link of links()){
+  const from=initialById.get(link.dataset.ganttFrom),to=initialById.get(link.dataset.ganttTo);
+  if(!from||!to)continue; // часть интервала может быть за границей годового окна
+  assert.ok(start(to)>=end(from)-1e-7,`${link.dataset.ganttFrom}: окончание ${end(from)} ≤ старт ${start(to)} ${link.dataset.ganttTo}`);
+  checked++;
+  if(link.dataset.ganttKind==='pack'){
+   const machine=initialById.get(link.dataset.ganttTo.slice('УП-1-'.length));
+   assert.ok(machine,'у упаковки есть машинная кампания');
+   assert.ok(start(to)>=end(machine)-1e-7,'упаковка правее машины и резки своей цепочки');
+   packChecked++;
+  }
+ }
+ assert.ok(checked>100,'проверены связи всего года, а не один частный случай');
+ assert.ok(packChecked>20,'для каждой машинной кампании есть связь резка → упаковка');
+ assert.equal(svg().querySelectorAll('.gantt-link.bad').length,0);
+ assert.match(d.querySelector('.dispatch-violations-panel').textContent,/Нарушений нет/);
+ assert.match(d.querySelector('.dispatch-violations-panel').textContent,/упаковка — после резки/);
+ /* Ручной сдвиг на сутки оставляет старт downstream ПОЗЖЕ старта upstream,
+    но раньше его окончания. Проверка обязана поймать именно эту внутрисуточную
+    накладку: прежнее сравнение start/start считало такую связь корректной. */
+ const candidate=links().map(link=>({link,from:initialById.get(link.dataset.ganttFrom),to:initialById.get(link.dataset.ganttTo)})).find(x=>
+  x.link.dataset.ganttKind==='fin'&&x.from&&x.to&&
+  start(x.to)-24>=start(x.from)&&start(x.to)-24<end(x.from)&&
+  Number(x.to.getAttribute('x'))>=Number(svg().dataset.day));
+ assert.ok(candidate,'есть кампания длиннее суток для проверки частичной накладки');
+ d.querySelector('[data-dispatch-cascade]').click();
+ assert.equal(d.querySelector('[data-dispatch-cascade]').getAttribute('aria-pressed'),'false');
+ const day=Number(svg().dataset.day),fromId=candidate.link.dataset.ganttFrom,toId=candidate.link.dataset.ganttTo;
+ candidate.to.dispatchEvent(new w.MouseEvent('mousedown',{button:0,clientX:500,bubbles:true}));
+ d.dispatchEvent(new w.MouseEvent('mousemove',{clientX:500-day,bubbles:true}));
+ d.dispatchEvent(new w.MouseEvent('mouseup',{bubbles:true}));
+ const movedFrom=byId().get(fromId),movedTo=byId().get(toId);
+ assert.ok(start(movedTo)>=start(movedFrom),'старт всё ещё не раньше старта upstream');
+ assert.ok(start(movedTo)<end(movedFrom),'но начинается до окончания upstream');
+ const badLink=links().find(link=>link.dataset.ganttFrom===fromId&&link.dataset.ganttTo===toId);
+ assert.ok(badLink.classList.contains('bad'),'finish-to-start нарушение подсвечено');
+ assert.match(d.querySelector('.dispatch-violations-panel').textContent,/Накладка, ч/);
+ d.querySelector('[data-dispatch-reset]').click();
+ assert.equal(svg().querySelectorAll('.gantt-link.bad').length,0);
+ }finally{w.close();}
+});
+
 test('dispatch: capacity availability reacts to manual campaign moves',()=>{
  const dom=browser(),w=dom.window,d=w.document;try{
  d.querySelector('[data-tab="dispatch"]').click();
