@@ -352,15 +352,35 @@
       const onHand = balance(order.product, "plant", AS_OF);
       const plantAvailable = balance(order.product, "plant", directShip);
       if (onHand >= order.qty && plantAvailable >= order.qty) {
+        /* Клиент на самом заводе (LC12) — прямая отгрузка со склада завода.
+           Для остальных клиентов место отгрузки — их РЦ: товар сначала
+           перемещается со склада завода на РЦ (node.days дней), затем
+           последняя миля до клиента (1 день). */
+        if (customer.node === "plant") {
+          return {
+            sourceNode: "plant",
+            sourceKind: "Завод",
+            stockStatus: "yes",
+            availableQty: onHand,
+            productionQty: 0,
+            productionDate: null,
+            shipDate: directShip,
+            deliveryDate: addDays(directShip, directDays),
+            reservationNode: "plant",
+            reservationDate: AS_OF < directShip ? AS_OF : directShip,
+          };
+        }
+        const rcArrival = addDays(directShip, node.days);
+        const shipDate = maxDate(rcArrival, addDays(requested, -1));
         return {
-          sourceNode: "plant",
-          sourceKind: "Завод",
+          sourceNode: customer.node,
+          sourceKind: "Завод → РЦ",
           stockStatus: "yes",
           availableQty: onHand,
           productionQty: 0,
           productionDate: null,
-          shipDate: directShip,
-          deliveryDate: addDays(directShip, directDays),
+          shipDate,
+          deliveryDate: addDays(shipDate, 1),
           reservationNode: "plant",
           reservationDate: AS_OF < directShip ? AS_OF : directShip,
         };
